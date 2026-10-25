@@ -1,0 +1,104 @@
+// YouTube Auto-Channel Monetization Engine
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// A tracked niche with trend + monetization metrics
+model Niche {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  category        String   // e.g. "Finance", "AI", "Education"
+  cpmLow          Float    // USD per 1k views (long-form)
+  cpmHigh         Float
+  shortsRpm       Float    // USD per 1k Shorts views
+  trendScore      Float    // 0-100, momentum vs 90d baseline
+  competition     Float    // 0-100, higher = more crowded
+  evergreenFactor Float    // 0-1, content shelf life multiplier
+  automationEase  Float    // 0-1, how feasible to produce faceless
+  compositeScore  Float    // weighted score 0-100 (calculated)
+  sampleChannels  String?  // comma-separated reference channels
+  bestFor         String?  // "long-form" | "shorts" | "hybrid"
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  videos VideoProject[]
+}
+
+// A video in the production pipeline
+model VideoProject {
+  id           String   @id @default(cuid())
+  nicheId      String
+  niche        Niche    @relation(fields: [nicheId], references: [id])
+  title        String
+  hook         String?  // first 30s hook text
+  format       String   // "long-form" | "shorts"
+  status       String   // "idea" | "scripted" | "voiced" | "imaged" | "assembled" | "scheduled" | "published"
+  scriptJson   String?  // JSON: { intro, scenes: [{heading, narration, brollPrompt, durationSec}], outro }
+  voiceoverUrl String?
+  thumbnailUrl String?
+  durationSec  Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  scenes  Scene[]
+  assets  GeneratedAsset[]
+  slots   PublishingSlot[]
+}
+
+// A scene in the storyboard
+model Scene {
+  id           String   @id @default(cuid())
+  videoId      String
+  video        VideoProject @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  order        Int
+  heading      String
+  narration    String
+  brollPrompt  String
+  durationSec  Int      @default(8)
+  imageUrl     String?
+  audioUrl     String?
+  createdAt    DateTime @default(now())
+}
+
+// Generated assets (audio, image) — file URLs cached
+model GeneratedAsset {
+  id           String   @id @default(cuid())
+  videoId      String
+  video        VideoProject @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  type         String   // "voiceover" | "scene-image" | "thumbnail"
+  url          String
+  metaJson     String?
+  createdAt    DateTime @default(now())
+}
+
+// Scheduled publishing slot
+model PublishingSlot {
+  id           String   @id @default(cuid())
+  videoId      String
+  video        VideoProject @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  scheduledAt  DateTime
+  platform     String   @default("youtube")
+  publishedAt  DateTime?
+  viewsActual  Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+// Monetization record (projection or actual)
+model MonetizationRecord {
+  id           String   @id @default(cuid())
+  monthKey     String   // YYYY-MM
+  nicheName    String
+  format       String   // "long-form" | "shorts"
+  projectedViews Int
+  estimatedCpm Float
+  estimatedRpm Float
+  projectedRevenue Float
+  actualRevenue Float?
+  createdAt    DateTime @default(now())
+}
