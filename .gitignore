@@ -52,3 +52,14 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# AutoTube: SQLite database (created at runtime)
+/db/*.db
+/db/*.db-journal
+
+# AutoTube: AI-generated assets (audio, images) — produced at runtime
+/public/generated/
+
+# AutoTube: agent-browser screenshots in download/
+/download/*.png
+/download/autotube-*.png
