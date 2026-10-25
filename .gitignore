@@ -64,3 +64,4 @@ server.log
 # AutoTube: agent-browser screenshots in download/
 /download/*.png
 /download/autotube-*.png
+bun.lock
