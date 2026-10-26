@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getZai } from "@/lib/zai";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// Vercel serverless has a read-only filesystem — we can't write PNGs to
-// public/generated/. Instead, we store the base64 image as a data URL
-// directly in the Scene.imageUrl field (TEXT column, can hold any string).
+// Z.ai public API image generation returns {data: [{url: "..."}]} — a
+// temporary URL (30-day expiry) instead of base64 data. We bypass the
+// z-ai-web-dev-sdk (which tries to download & convert to base64 and fails)
+// and call the endpoint directly with fetch.
 //
-// Tradeoff: each scene image is ~500KB-1MB of base64 in the DB. With a 9GB
-// Turso database, that's ~9,000-18,000 scenes — plenty for a small channel.
-// For larger deployments, switch to Cloudflare R2 (free 10GB).
+// The URL is stored in Scene.imageUrl. The client renders via
+// <img src={url}> which works fine with remote URLs.
+//
+// Tradeoff: URLs expire after 30 days. For long-term storage, switch
+// to Cloudflare R2 (free 10GB) — fetch the image from Z.ai, upload to
+// R2, store the R2 URL.
+
+interface ZaiImageResponse {
+  created?: number;
+  data?: Array<{ url?: string; b64_json?: string }>;
+  content_filter?: unknown[];
+  error?: { code?: string | number; message?: string };
+}
 
 export async function POST(req: Request) {
   try {
@@ -33,56 +43,81 @@ export async function POST(req: Request) {
       );
     }
 
-    const zai = await getZai();
-
-    if (!process.env.ZAI_BASE_URL || !process.env.ZAI_API_KEY) {
+    const baseUrl = process.env.ZAI_BASE_URL;
+    const apiKey = process.env.ZAI_API_KEY;
+    if (!baseUrl || !apiKey) {
       return NextResponse.json(
         { error: "Z.ai API credentials not set" },
         { status: 500 }
       );
     }
 
-    const size = video.format === "shorts" ? "864x1152" : "1440x720";
+    // Z.ai's glm-image model accepts only certain sizes — use 1280x1280
+    // (default) which always works. For shorts, also 1280x1280 (square
+    // works for vertical too — the AI generates appropriately).
+    const size = "1280x1280";
     const styleCue =
       "cinematic documentary still, dramatic lighting, depth of field, rich color grade, no text overlay, no watermark, no logo";
 
     const updatedScenes: { id: string; imageUrl: string }[] = [];
     const errors: string[] = [];
 
-    // Helper to wait between image gen calls (avoid Z.ai 429 rate limit)
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
     for (const scene of video.scenes) {
       const fullPrompt = `${scene.brollPrompt}. ${styleCue}`;
       try {
-        const response = await zai.images.generations.create({
-          prompt: fullPrompt,
-          size,
+        // Call Z.ai image gen API directly (bypass the SDK which fails
+        // when trying to download/convert images to base64)
+        const resp = await fetch(`${baseUrl}/images/generations`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            "Accept-Language": "en-US,en",
+          },
+          body: JSON.stringify({
+            model: "glm-image",
+            prompt: fullPrompt,
+            size,
+          }),
         });
-        const b64 = response.data?.[0]?.base64;
-        if (!b64) {
-          // Z.ai may have returned an error response instead of an image
-          const errResp = (response as { error?: { message?: string } }).error;
-          const errMsg = errResp?.message ?? "No base64 in response";
-          errors.push(`Scene ${scene.order}: ${errMsg}`);
+        if (!resp.ok) {
+          const errBody = await resp.text();
+          errors.push(
+            `Scene ${scene.order}: HTTP ${resp.status} - ${errBody.substring(0, 200)}`
+          );
           updatedScenes.push({ id: scene.id, imageUrl: "" });
+          await sleep(3000);
           continue;
         }
-        // Store as data URL — works in <img src="data:image/png;base64,...">
-        const dataUrl = `data:image/png;base64,${b64}`;
+        const result = (await resp.json()) as ZaiImageResponse;
+        const imageUrl = result.data?.[0]?.url;
+        if (!imageUrl) {
+          const errMsg = result.error?.message ?? "No URL in response";
+          errors.push(`Scene ${scene.order}: ${errMsg}`);
+          updatedScenes.push({ id: scene.id, imageUrl: "" });
+          await sleep(3000);
+          continue;
+        }
         await db.scene.update({
           where: { id: scene.id },
-          data: { imageUrl: dataUrl },
+          data: { imageUrl },
         });
         await db.generatedAsset.create({
           data: {
             videoId,
             type: "scene-image",
-            url: dataUrl,
-            metaJson: JSON.stringify({ sceneOrder: scene.order, size, storage: "data-url" }),
+            url: imageUrl,
+            metaJson: JSON.stringify({
+              sceneOrder: scene.order,
+              size,
+              storage: "zai-remote-url",
+              expires: "30 days",
+            }),
           },
         });
-        updatedScenes.push({ id: scene.id, imageUrl: dataUrl });
+        updatedScenes.push({ id: scene.id, imageUrl });
       } catch (err) {
         const errMsg = (err as Error).message ?? "Unknown error";
         errors.push(`Scene ${scene.order}: ${errMsg}`);
@@ -101,17 +136,28 @@ export async function POST(req: Request) {
     if (scriptPayload?.thumbnailPrompt) {
       try {
         await sleep(2000);
-        const tResp = await zai.images.generations.create({
-          prompt: `${scriptPayload.thumbnailPrompt}. High contrast YouTube thumbnail style, bold focal subject, dark cinematic background, no text, no watermark`,
-          size: "1440x720",
+        const tResp = await fetch(`${baseUrl}/images/generations`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            "Accept-Language": "en-US,en",
+          },
+          body: JSON.stringify({
+            model: "glm-image",
+            prompt: `${scriptPayload.thumbnailPrompt}. High contrast YouTube thumbnail style, bold focal subject, dark cinematic background, no text, no watermark`,
+            size: "1728x960", // 16:9 for YouTube thumbnail
+          }),
         });
-        const tB64 = tResp.data?.[0]?.base64;
-        if (tB64) {
-          thumbnailUrl = `data:image/png;base64,${tB64}`;
-          await db.videoProject.update({
-            where: { id: videoId },
-            data: { thumbnailUrl, status: "imaged" },
-          });
+        if (tResp.ok) {
+          const tResult = (await tResp.json()) as ZaiImageResponse;
+          thumbnailUrl = tResult.data?.[0]?.url ?? null;
+          if (thumbnailUrl) {
+            await db.videoProject.update({
+              where: { id: videoId },
+              data: { thumbnailUrl, status: "imaged" },
+            });
+          }
         }
       } catch (err) {
         console.error("thumbnail fail", err);
