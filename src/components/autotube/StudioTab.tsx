@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import type { Niche, VideoProject } from "@/lib/autotube/types";
 import { fmtDuration, STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
+import ExportMp4Button from "@/components/autotube/ExportMp4Button";
 
 interface Props {
   preselectNicheId?: string | null;
@@ -560,6 +561,16 @@ function GeneratedPackage({
             Outro / CTA
           </div>
           <p className="text-sm italic">{scriptPayload.outro}</p>
+        </div>
+      )}
+
+      {/* MP4 export — only shown if at least one scene has both image + audio */}
+      {scenes.some((s) => s.imageUrl && s.audioUrl) && (
+        <div className="p-3 rounded-md bg-purple-500/5 border border-purple-500/20">
+          <div className="text-[10px] uppercase tracking-wider text-purple-300 mb-2 flex items-center gap-1">
+            <Film className="size-3" /> Export final MP4 video
+          </div>
+          <ExportMp4Button scenes={scenes} videoTitle={video.title} />
         </div>
       )}
 
