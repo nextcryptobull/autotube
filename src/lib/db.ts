@@ -1,22 +1,22 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaLibSQL } from "@prisma/adapter-libsql";
-import { createClient } from "@libsql/client";
+import type { Config } from "@libsql/client";
 
 /**
  * AutoTube Studio database client.
  *
- * - For `libsql://` URLs (Turso / production on Vercel): uses the libsql
- *   driver adapter, which routes Prisma queries over HTTP to Turso.
- * - For `file:./local.db` URLs (local dev): uses the same libsql client
- *   (which accepts file: URLs natively) — keeps one code path.
+ * Uses the libsql driver adapter (Prisma 6.x GA feature) to route queries
+ * to either:
+ *   - A local SQLite file (DATABASE_URL=file:./db/custom.db) for dev
+ *   - A Turso remote database (DATABASE_URL=libsql://...?authToken=...) for prod
  *
- * Lazy-initialized via a Proxy so PrismaClient isn't constructed at build
- * time (which would fail `next build` when DATABASE_URL isn't set yet).
+ * IMPORTANT: PrismaLibSQL constructor takes a Config object (not a libsql
+ * Client instance). The adapter creates the libsql client internally from
+ * the config. Passing a Client instance causes the adapter to read the URL
+ * from the wrong field, resulting in 'URL_INVALID: The URL undefined'.
  *
- * NOTE: We use static ESM imports (NOT dynamic require()) because
- * Turbopack on Vercel bundles dynamic require() calls differently —
- * the modules ended up as `undefined` at runtime, causing Prisma's
- * URL validator to throw `URL_INVALID: The URL 'undefined'`.
+ * Static ESM imports are required (NOT dynamic require()) because
+ * Turbopack on Vercel bundles dynamic require() incorrectly.
  */
 
 const globalForPrisma = globalThis as unknown as {
@@ -34,11 +34,14 @@ function createPrismaClient(): PrismaClient {
     );
   }
 
-  // Both file: and libsql:// URLs are accepted by @libsql/client.
-  // For libsql://, we use the driver adapter (HTTP transport to Turso).
-  // For file:, libsql client opens the local SQLite file natively.
-  const libsql = createClient({ url });
-  const adapter = new PrismaLibSQL(libsql);
+  // Build the libsql Config — the adapter will create the client internally.
+  // For libsql:// URLs, the authToken is already in the query string.
+  // For file: URLs, no authToken is needed (local SQLite file).
+  const config: Config = { url };
+
+  // PrismaLibSQL takes Config, NOT a Client instance.
+  // This was the bug — passing a Client caused URL_INVALID errors.
+  const adapter = new PrismaLibSQL(config);
   return new PrismaClient({ adapter });
 }
 
@@ -48,7 +51,9 @@ function getClient(): PrismaClient {
   return globalForPrisma.prisma;
 }
 
-// Lazy Proxy: PrismaClient is only created on first DB method call.
+// Lazy Proxy: PrismaClient is only created on first DB method call,
+// NOT at module load. This is critical for `next build` to succeed
+// even when DATABASE_URL isn't set at build time.
 export const db = new Proxy({} as PrismaClient, {
   get(_target, prop) {
     const client = getClient();
