@@ -47,6 +47,7 @@ export async function POST(req: Request) {
       "cinematic documentary still, dramatic lighting, depth of field, rich color grade, no text overlay, no watermark, no logo";
 
     const updatedScenes: { id: string; imageUrl: string }[] = [];
+    const errors: string[] = [];
 
     // Helper to wait between image gen calls (avoid Z.ai 429 rate limit)
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -60,6 +61,10 @@ export async function POST(req: Request) {
         });
         const b64 = response.data?.[0]?.base64;
         if (!b64) {
+          // Z.ai may have returned an error response instead of an image
+          const errResp = (response as { error?: { message?: string } }).error;
+          const errMsg = errResp?.message ?? "No base64 in response";
+          errors.push(`Scene ${scene.order}: ${errMsg}`);
           updatedScenes.push({ id: scene.id, imageUrl: "" });
           continue;
         }
@@ -79,7 +84,9 @@ export async function POST(req: Request) {
         });
         updatedScenes.push({ id: scene.id, imageUrl: dataUrl });
       } catch (err) {
-        console.error("scene image fail", scene.id, err);
+        const errMsg = (err as Error).message ?? "Unknown error";
+        errors.push(`Scene ${scene.order}: ${errMsg}`);
+        console.error("scene image fail", scene.id, errMsg);
         updatedScenes.push({ id: scene.id, imageUrl: "" });
       }
       // Throttle to avoid Z.ai 429
@@ -120,6 +127,7 @@ export async function POST(req: Request) {
       ok: true,
       scenes: updatedScenes,
       thumbnailUrl,
+      errors: errors.length > 0 ? errors : undefined,
     });
   } catch (e) {
     console.error("scene image error", e);
