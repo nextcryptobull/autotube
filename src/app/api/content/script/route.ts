@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getZai } from "@/lib/zai";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -56,8 +57,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Niche not found" }, { status: 404 });
     }
 
-    const ZAI = (await import("z-ai-web-dev-sdk")).default;
-    const zai = await ZAI.create();
+    // Use the shared ZAI helper (handles Vercel env var → .z-ai-config dance)
+    const zai = await getZai();
 
     const userPrompt = `Generate a ${format} YouTube video script.
 Niche: ${niche.name} (${niche.category})

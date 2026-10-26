@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getZai } from "@/lib/zai";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
@@ -55,8 +56,7 @@ export async function POST(req: Request) {
     fs.mkdirSync(GEN_DIR, { recursive: true });
     fs.mkdirSync(TMP_DIR, { recursive: true });
 
-    const ZAI = (await import("z-ai-web-dev-sdk")).default;
-    const zai = await ZAI.create();
+    const zai = await getZai();
 
     const scriptPayload = video.scriptJson
       ? (JSON.parse(video.scriptJson) as { outro?: string })

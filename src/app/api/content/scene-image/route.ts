@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getZai } from "@/lib/zai";
 import fs from "fs";
 import path from "path";
 
@@ -31,8 +32,7 @@ export async function POST(req: Request) {
 
     fs.mkdirSync(GEN_DIR, { recursive: true });
 
-    const ZAI = (await import("z-ai-web-dev-sdk")).default;
-    const zai = await ZAI.create();
+    const zai = await getZai();
 
     // Determine the right image dimensions per format
     const size = video.format === "shorts" ? "864x1152" : "1440x720";
