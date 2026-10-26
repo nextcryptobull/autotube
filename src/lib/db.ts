@@ -1,16 +1,22 @@
 import { PrismaClient } from "@prisma/client";
+import { PrismaLibSQL } from "@prisma/adapter-libsql";
+import { createClient } from "@libsql/client";
 
 /**
  * AutoTube Studio database client.
  *
- * Routes based on the DATABASE_URL scheme:
- *   - `file:...`     → use Prisma's built-in SQLite engine (local dev)
- *   - `libsql://...` → use the libsql driver adapter (Turso / Vercel)
+ * - For `libsql://` URLs (Turso / production on Vercel): uses the libsql
+ *   driver adapter, which routes Prisma queries over HTTP to Turso.
+ * - For `file:./local.db` URLs (local dev): uses the same libsql client
+ *   (which accepts file: URLs natively) — keeps one code path.
  *
- * Lazy-initialized via a Proxy so the client is created only on the first DB
- * method call, NOT at module load. This is critical for Vercel — Next.js
- * bundles API route modules at build time, and we don't want to instantiate
- * PrismaClient (which validates DATABASE_URL) during `next build`.
+ * Lazy-initialized via a Proxy so PrismaClient isn't constructed at build
+ * time (which would fail `next build` when DATABASE_URL isn't set yet).
+ *
+ * NOTE: We use static ESM imports (NOT dynamic require()) because
+ * Turbopack on Vercel bundles dynamic require() calls differently —
+ * the modules ended up as `undefined` at runtime, causing Prisma's
+ * URL validator to throw `URL_INVALID: The URL 'undefined'`.
  */
 
 const globalForPrisma = globalThis as unknown as {
@@ -28,21 +34,12 @@ function createPrismaClient(): PrismaClient {
     );
   }
 
-  if (url.startsWith("libsql://") || url.startsWith("libsql:")) {
-    // Use the libsql driver adapter for Turso / remote libSQL servers.
-    // Dynamic import to avoid bundling the adapter when running locally
-    // with a file: URL (which uses Prisma's built-in SQLite engine).
-    const { PrismaLibSQL } = require("@prisma/adapter-libsql");
-    const { createClient } = require("@libsql/client");
-    const libsql = createClient({ url });
-    const adapter = new PrismaLibSQL(libsql);
-    return new PrismaClient({ adapter });
-  }
-
-  // file: URLs (local SQLite) — use Prisma's native engine, no adapter needed.
-  return new PrismaClient({
-    log: process.env.NODE_ENV === "production" ? ["error"] : ["query"],
-  });
+  // Both file: and libsql:// URLs are accepted by @libsql/client.
+  // For libsql://, we use the driver adapter (HTTP transport to Turso).
+  // For file:, libsql client opens the local SQLite file natively.
+  const libsql = createClient({ url });
+  const adapter = new PrismaLibSQL(libsql);
+  return new PrismaClient({ adapter });
 }
 
 function getClient(): PrismaClient {
