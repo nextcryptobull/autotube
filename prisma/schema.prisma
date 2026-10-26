@@ -1,7 +1,12 @@
 // YouTube Auto-Channel Monetization Engine
+// Supports BOTH local SQLite (file:./db/custom.db) and Turso (libsql://...)
+// via the libsql driver adapter (previewFeatures driverAdapters).
+// The provider stays "sqlite" — Prisma 6.x doesn't recognize "libsql" as a
+// provider name; the libsql client adapter handles the URL routing instead.
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
