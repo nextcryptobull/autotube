@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { createClient } from "@libsql/client";
 
 // Initial niches sourced from 2026 trend research
 // (OutlierKit, vidIQ, Fliki, Virvid benchmarks — see worklog.md)
@@ -222,8 +223,131 @@ function calcComposite(n: {
   return Math.round(score * 10) / 10;
 }
 
+// Schema SQL — applied if tables don't exist yet (idempotent).
+// This makes /api/seed self-bootstrapping: hit it once on a fresh
+// Turso database and it'll create all 6 tables AND seed the niches.
+const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS "Niche" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "name" TEXT NOT NULL,
+  "category" TEXT NOT NULL,
+  "cpmLow" REAL NOT NULL,
+  "cpmHigh" REAL NOT NULL,
+  "shortsRpm" REAL NOT NULL,
+  "trendScore" REAL NOT NULL,
+  "competition" REAL NOT NULL,
+  "evergreenFactor" REAL NOT NULL,
+  "automationEase" REAL NOT NULL,
+  "compositeScore" REAL NOT NULL,
+  "sampleChannels" TEXT,
+  "bestFor" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE("name")
+);
+
+CREATE TABLE IF NOT EXISTS "VideoProject" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "nicheId" TEXT NOT NULL,
+  "title" TEXT NOT NULL,
+  "hook" TEXT,
+  "format" TEXT NOT NULL,
+  "status" TEXT NOT NULL,
+  "scriptJson" TEXT,
+  "voiceoverUrl" TEXT,
+  "thumbnailUrl" TEXT,
+  "durationSec" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("nicheId") REFERENCES "Niche"("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "Scene" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "videoId" TEXT NOT NULL,
+  "order" INTEGER NOT NULL,
+  "heading" TEXT NOT NULL,
+  "narration" TEXT NOT NULL,
+  "brollPrompt" TEXT NOT NULL,
+  "durationSec" INTEGER NOT NULL DEFAULT 8,
+  "imageUrl" TEXT,
+  "audioUrl" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("videoId") REFERENCES "VideoProject"("id") ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "GeneratedAsset" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "videoId" TEXT NOT NULL,
+  "type" TEXT NOT NULL,
+  "url" TEXT NOT NULL,
+  "metaJson" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("videoId") REFERENCES "VideoProject"("id") ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "PublishingSlot" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "videoId" TEXT NOT NULL,
+  "scheduledAt" DATETIME NOT NULL,
+  "platform" TEXT NOT NULL DEFAULT 'youtube',
+  "publishedAt" DATETIME,
+  "viewsActual" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY ("videoId") REFERENCES "VideoProject"("id") ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS "MonetizationRecord" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "monthKey" TEXT NOT NULL,
+  "nicheName" TEXT NOT NULL,
+  "format" TEXT NOT NULL,
+  "projectedViews" INTEGER NOT NULL,
+  "estimatedCpm" REAL NOT NULL,
+  "estimatedRpm" REAL NOT NULL,
+  "projectedRevenue" REAL NOT NULL,
+  "actualRevenue" REAL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS "VideoProject_nicheId_idx" ON "VideoProject"("nicheId");
+CREATE INDEX IF NOT EXISTS "Scene_videoId_idx" ON "Scene"("videoId");
+CREATE INDEX IF NOT EXISTS "GeneratedAsset_videoId_idx" ON "GeneratedAsset"("videoId");
+CREATE INDEX IF NOT EXISTS "PublishingSlot_videoId_idx" ON "PublishingSlot"("videoId");
+`;
+
+// Apply the schema directly via libsql client (bypasses Prisma which
+// doesn't support raw DDL on libsql). Idempotent — safe to run on every
+// /api/seed call. CREATE TABLE IF NOT EXISTS skips existing tables.
+async function ensureSchema(): Promise<void> {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is not set");
+  if (!url.startsWith("libsql://") && !url.startsWith("file:")) {
+    throw new Error("DATABASE_URL must start with libsql:// or file:");
+  }
+  const client = createClient({ url });
+  const statements = SCHEMA_SQL.split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && !s.startsWith("--"));
+  for (const stmt of statements) {
+    try {
+      await client.execute(stmt);
+    } catch (err) {
+      // "already exists" errors are fine — idempotent re-runs
+      const msg = (err as Error).message ?? "";
+      if (!msg.includes("already exists")) {
+        console.error("Schema statement failed:", stmt.substring(0, 80), msg);
+      }
+    }
+  }
+}
+
 export async function POST() {
   try {
+    // 1. Ensure all tables exist (idempotent)
+    await ensureSchema();
+
+    // 2. Upsert all 15 niches
     let upserted = 0;
     for (const n of NICHES) {
       const score = calcComposite(n);
@@ -236,6 +360,7 @@ export async function POST() {
     }
     return NextResponse.json({ ok: true, count: upserted });
   } catch (e) {
+    console.error("seed error", e);
     return NextResponse.json(
       { error: (e as Error).message },
       { status: 500 }
@@ -245,6 +370,8 @@ export async function POST() {
 
 export async function GET() {
   try {
+    // Also ensure schema on GET (helps /api/niches work after first deploy)
+    await ensureSchema();
     const niches = await db.niche.findMany({
       orderBy: { compositeScore: "desc" },
     });
