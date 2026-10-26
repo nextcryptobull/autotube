@@ -84,6 +84,7 @@ Return JSON only, following the schema in the system message.`;
     let completion;
     try {
       completion = await zai.chat.completions.create({
+        model: "glm-4.5",  // Z.ai public API requires explicit model name
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt },

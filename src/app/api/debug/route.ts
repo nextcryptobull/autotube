@@ -74,6 +74,8 @@ export async function GET() {
       DATABASE_URL: redact(dbUrl, "DATABASE_URL"),
       TURSO_DATABASE_URL: redact(tursoUrl, "TURSO_DATABASE_URL"),
       TURSO_AUTH_TOKEN: redact(tursoToken, "TURSO_AUTH_TOKEN"),
+      ZAI_BASE_URL: redact(process.env.ZAI_BASE_URL, "ZAI_BASE_URL"),
+      ZAI_API_KEY: redact(process.env.ZAI_API_KEY, "ZAI_API_KEY"),
     },
     databaseUrlAnalysis: urlAnalysis,
     troubleshooting: !dbUrl
