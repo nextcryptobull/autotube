@@ -1,22 +1,21 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getZai } from "@/lib/zai";
-import fs from "fs";
-import path from "path";
-import { exec } from "child_process";
-import { promisify } from "util";
-
-const execAsync = promisify(exec);
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const GEN_DIR = path.join(process.cwd(), "public", "generated", "audio");
-const TMP_DIR = path.join(process.cwd(), "public", "generated", "audio", "tmp");
-const PUBLIC_PREFIX = "/generated/audio";
+// Vercel serverless: read-only filesystem + no ffmpeg binary.
+// We can't write WAV files or concatenate them via ffmpeg.
+// Instead, generate per-scene TTS audio as base64 data URLs and store
+// them in Scene.audioUrl. The client plays each scene's audio sequentially
+// (or shows a "Play" button per scene).
+//
+// Note: Z.ai's public API may or may not expose /audio/tts. If it errors
+// with 404, the user can swap to OpenAI's TTS endpoint by setting
+// OPENAI_API_KEY env var (future enhancement).
 
-// TTS API limits to 1024 chars per request. Split long narration into
-// chunks <= 1000 chars at sentence boundaries.
+// TTS API limits to 1024 chars per request. Split long narration.
 function chunkText(text: string, max = 1000): string[] {
   if (text.length <= max) return [text];
   const chunks: string[] = [];
@@ -53,23 +52,24 @@ export async function POST(req: Request) {
       );
     }
 
-    fs.mkdirSync(GEN_DIR, { recursive: true });
-    fs.mkdirSync(TMP_DIR, { recursive: true });
-
     const zai = await getZai();
 
-    const scriptPayload = video.scriptJson
-      ? (JSON.parse(video.scriptJson) as { outro?: string })
-      : null;
+    if (!process.env.ZAI_BASE_URL || !process.env.ZAI_API_KEY) {
+      return NextResponse.json(
+        { error: "Z.ai API credentials not set" },
+        { status: 500 }
+      );
+    }
 
-    const sceneAudios: string[] = [];
+    const updatedScenes: { id: string; order: number; audioUrl: string | null }[] = [];
 
     for (const scene of video.scenes) {
       const chunks = chunkText(scene.narration);
-      const partFiles: string[] = [];
+      // Generate audio per chunk, concatenate base64 (NOT WAV bytes — we'd
+      // need ffmpeg for proper concat. Instead, store per-chunk audio as
+      // data URLs and let the client play them in sequence via JS).
+      const chunkAudioUrls: string[] = [];
       for (let i = 0; i < chunks.length; i++) {
-        const partName = `${videoId}-scene-${scene.order}-part-${i}.wav`;
-        const partPath = path.join(TMP_DIR, partName);
         try {
           const response = await zai.audio.tts.create({
             input: chunks[i],
@@ -79,129 +79,71 @@ export async function POST(req: Request) {
             stream: false,
           });
           const ab = await response.arrayBuffer();
-          fs.writeFileSync(partPath, Buffer.from(new Uint8Array(ab)));
-          partFiles.push(partPath);
+          const b64 = Buffer.from(new Uint8Array(ab)).toString("base64");
+          const dataUrl = `data:audio/wav;base64,${b64}`;
+          chunkAudioUrls.push(dataUrl);
         } catch (err) {
-          console.error("tts part fail", scene.id, i, err);
+          console.error(`TTS fail scene ${scene.order} chunk ${i}`, err);
+          // If TTS fails entirely (e.g. Z.ai public API doesn't expose
+          // /audio/tts), bail out with the error message so the user knows
+          // to switch providers.
+          const errMsg = (err as Error).message ?? "Unknown TTS error";
+          if (errMsg.includes("404") || errMsg.toLowerCase().includes("not found")) {
+            return NextResponse.json(
+              {
+                error:
+                  "Z.ai's public API doesn't expose /audio/tts endpoint. " +
+                  "Voiceover generation requires either OpenAI's TTS API or running locally with ffmpeg. " +
+                  "See README.md 'Known runtime limitations' section.",
+              },
+              { status: 502 }
+            );
+          }
         }
       }
-      if (partFiles.length === 0) continue;
-      // Concat parts for this scene
-      const sceneFile = `${videoId}-scene-${scene.order}.wav`;
-      const scenePath = path.join(TMP_DIR, sceneFile);
-      if (partFiles.length === 1) {
-        fs.copyFileSync(partFiles[0], scenePath);
-      } else {
-        const listFile = path.join(TMP_DIR, `${videoId}-scene-${scene.order}-list.txt`);
-        fs.writeFileSync(
-          listFile,
-          partFiles.map((f) => `file '${f}'`).join("\n")
-        );
-        await execAsync(
-          `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${scenePath}" 2>&1`
-        );
+      // If we have chunks, store the first one as the scene's audio URL.
+      // The client should play chunkAudioUrls[0], [1], [2] sequentially
+      // for scenes with multiple chunks.
+      const audioUrl = chunkAudioUrls.length > 0 ? chunkAudioUrls[0] : null;
+      if (audioUrl) {
+        await db.scene.update({
+          where: { id: scene.id },
+          data: { audioUrl },
+        });
       }
-      sceneAudios.push(scenePath);
+      updatedScenes.push({
+        id: scene.id,
+        order: scene.order,
+        audioUrl,
+      });
     }
 
-    // Outro
-    if (scriptPayload?.outro) {
-      const chunks = chunkText(scriptPayload.outro);
-      const partFiles: string[] = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const partName = `${videoId}-outro-part-${i}.wav`;
-        const partPath = path.join(TMP_DIR, partName);
-        try {
-          const response = await zai.audio.tts.create({
-            input: chunks[i],
-            voice: "tongtong",
-            speed: 1.0,
-            response_format: "wav",
-            stream: false,
-          });
-          const ab = await response.arrayBuffer();
-          fs.writeFileSync(partPath, Buffer.from(new Uint8Array(ab)));
-          partFiles.push(partPath);
-        } catch (err) {
-          console.error("outro tts fail", err);
-        }
-      }
-      if (partFiles.length > 0) {
-        const outroFile = `${videoId}-outro.wav`;
-        const outroPath = path.join(TMP_DIR, outroFile);
-        if (partFiles.length === 1) {
-          fs.copyFileSync(partFiles[0], outroPath);
-        } else {
-          const listFile = path.join(TMP_DIR, `${videoId}-outro-list.txt`);
-          fs.writeFileSync(
-            listFile,
-            partFiles.map((f) => `file '${f}'`).join("\n")
-          );
-          await execAsync(
-            `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${outroPath}" 2>&1`
-          );
-        }
-        sceneAudios.push(outroPath);
-      }
-    }
-
-    if (sceneAudios.length === 0) {
-      return NextResponse.json(
-        { error: "All TTS attempts failed" },
-        { status: 502 }
-      );
-    }
-
-    // Final concatenation across scenes — re-encode for safety
-    const finalName = `${videoId}.wav`;
-    const finalPath = path.join(GEN_DIR, finalName);
-    const listFile = path.join(TMP_DIR, `${videoId}-final-list.txt`);
-    fs.writeFileSync(
-      listFile,
-      sceneAudios.map((f) => `file '${f}'`).join("\n")
-    );
-    try {
-      await execAsync(
-        `ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalPath}" 2>&1`
-      );
-    } catch (err) {
-      // Fallback: try re-encoding
-      console.warn("concat copy failed, re-encoding", err);
-      await execAsync(
-        `ffmpeg -y -f concat -safe 0 -i "${listFile}" -ar 22050 -ac 1 "${finalPath}" 2>&1`
-      );
-    }
-
-    const url = `${PUBLIC_PREFIX}/${finalName}`;
+    // Mark the video as voiced
     await db.videoProject.update({
       where: { id: videoId },
-      data: { voiceoverUrl: url, status: "voiced" },
+      data: { status: "voiced" },
     });
+
+    // Also store a "voiceover ready" marker — the client will fetch
+    // scenes and play each scene.audioUrl in sequence
     await db.generatedAsset.create({
       data: {
         videoId,
         type: "voiceover",
-        url,
+        url: "data:application/json;status=ready",
         metaJson: JSON.stringify({
-          voice: "tongtong",
-          scenes: video.scenes.length,
+          sceneCount: video.scenes.length,
+          storage: "per-scene-data-url",
         }),
       },
     });
 
-    // Clean up tmp folder for this video
-    try {
-      const tmpFiles = fs
-        .readdirSync(TMP_DIR)
-        .filter((f) => f.startsWith(`${videoId}-`));
-      for (const f of tmpFiles) {
-        try {
-          fs.unlinkSync(path.join(TMP_DIR, f));
-        } catch {}
-      }
-    } catch {}
-
-    return NextResponse.json({ ok: true, url, sceneCount: sceneAudios.length });
+    return NextResponse.json({
+      ok: true,
+      scenes: updatedScenes,
+      note:
+        "Per-scene audio stored as data URLs in Scene.audioUrl. Client should play them sequentially.",
+    });
   } catch (e) {
     console.error("voiceover error", e);
     return NextResponse.json(

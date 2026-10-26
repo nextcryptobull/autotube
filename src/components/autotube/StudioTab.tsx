@@ -424,7 +424,7 @@ function GeneratedPackage({
         </Button>
       </div>
 
-      {video.voiceoverUrl && (
+      {video.voiceoverUrl && video.voiceoverUrl.startsWith("data:audio") && (
         <div className="p-3 rounded-md bg-zinc-900/60 border border-zinc-800">
           <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
             <Play className="size-3" /> AI Voiceover preview
@@ -487,6 +487,18 @@ function GeneratedPackage({
                   <p className="text-xs text-muted-foreground italic">
                     B-roll: {s.brollPrompt}
                   </p>
+                  {s.audioUrl && s.audioUrl.startsWith("data:audio") && (
+                    <div className="pt-1.5">
+                      <div className="text-[10px] text-emerald-300/80 uppercase tracking-wider mb-1 flex items-center gap-1">
+                        <Mic className="size-3" /> Scene audio
+                      </div>
+                      <audio
+                        controls
+                        src={s.audioUrl}
+                        className="w-full h-7"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -1,14 +1,17 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getZai } from "@/lib/zai";
-import fs from "fs";
-import path from "path";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const GEN_DIR = path.join(process.cwd(), "public", "generated", "images");
-const PUBLIC_PREFIX = "/generated/images";
+// Vercel serverless has a read-only filesystem — we can't write PNGs to
+// public/generated/. Instead, we store the base64 image as a data URL
+// directly in the Scene.imageUrl field (TEXT column, can hold any string).
+//
+// Tradeoff: each scene image is ~500KB-1MB of base64 in the DB. With a 9GB
+// Turso database, that's ~9,000-18,000 scenes — plenty for a small channel.
+// For larger deployments, switch to Cloudflare R2 (free 10GB).
 
 export async function POST(req: Request) {
   try {
@@ -30,19 +33,22 @@ export async function POST(req: Request) {
       );
     }
 
-    fs.mkdirSync(GEN_DIR, { recursive: true });
-
     const zai = await getZai();
 
-    // Determine the right image dimensions per format
-    const size = video.format === "shorts" ? "864x1152" : "1440x720";
+    if (!process.env.ZAI_BASE_URL || !process.env.ZAI_API_KEY) {
+      return NextResponse.json(
+        { error: "Z.ai API credentials not set" },
+        { status: 500 }
+      );
+    }
 
+    const size = video.format === "shorts" ? "864x1152" : "1440x720";
     const styleCue =
       "cinematic documentary still, dramatic lighting, depth of field, rich color grade, no text overlay, no watermark, no logo";
 
     const updatedScenes: { id: string; imageUrl: string }[] = [];
 
-    // Helper to wait
+    // Helper to wait between image gen calls (avoid Z.ai 429 rate limit)
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
     for (const scene of video.scenes) {
@@ -57,30 +63,26 @@ export async function POST(req: Request) {
           updatedScenes.push({ id: scene.id, imageUrl: "" });
           continue;
         }
-        const buffer = Buffer.from(b64, "base64");
-        const filename = `${videoId}-scene-${scene.order}.png`;
-        const filepath = path.join(GEN_DIR, filename);
-        fs.writeFileSync(filepath, buffer);
-        const url = `${PUBLIC_PREFIX}/${filename}`;
-
+        // Store as data URL — works in <img src="data:image/png;base64,...">
+        const dataUrl = `data:image/png;base64,${b64}`;
         await db.scene.update({
           where: { id: scene.id },
-          data: { imageUrl: url },
+          data: { imageUrl: dataUrl },
         });
         await db.generatedAsset.create({
           data: {
             videoId,
             type: "scene-image",
-            url,
-            metaJson: JSON.stringify({ sceneOrder: scene.order, size }),
+            url: dataUrl,
+            metaJson: JSON.stringify({ sceneOrder: scene.order, size, storage: "data-url" }),
           },
         });
-        updatedScenes.push({ id: scene.id, imageUrl: url });
+        updatedScenes.push({ id: scene.id, imageUrl: dataUrl });
       } catch (err) {
         console.error("scene image fail", scene.id, err);
         updatedScenes.push({ id: scene.id, imageUrl: "" });
       }
-      // Throttle to avoid 429 (image gen API rate limit)
+      // Throttle to avoid Z.ai 429
       await sleep(3000);
     }
 
@@ -91,7 +93,6 @@ export async function POST(req: Request) {
     let thumbnailUrl: string | null = null;
     if (scriptPayload?.thumbnailPrompt) {
       try {
-        // Wait before thumbnail too
         await sleep(2000);
         const tResp = await zai.images.generations.create({
           prompt: `${scriptPayload.thumbnailPrompt}. High contrast YouTube thumbnail style, bold focal subject, dark cinematic background, no text, no watermark`,
@@ -99,10 +100,7 @@ export async function POST(req: Request) {
         });
         const tB64 = tResp.data?.[0]?.base64;
         if (tB64) {
-          const tBuf = Buffer.from(tB64, "base64");
-          const tFilename = `${videoId}-thumbnail.png`;
-          fs.writeFileSync(path.join(GEN_DIR, tFilename), tBuf);
-          thumbnailUrl = `${PUBLIC_PREFIX}/${tFilename}`;
+          thumbnailUrl = `data:image/png;base64,${tB64}`;
           await db.videoProject.update({
             where: { id: videoId },
             data: { thumbnailUrl, status: "imaged" },

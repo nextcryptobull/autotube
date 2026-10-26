@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getZai } from "@/lib/zai";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 interface SceneOut {
   heading: string;
@@ -57,16 +57,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Niche not found" }, { status: 404 });
     }
 
-    // Use the shared ZAI helper (handles Vercel env var → .z-ai-config dance)
     const zai = await getZai();
 
-    // Pre-flight check: ensure ZAI env vars are set on Vercel.
-    // Without these, the SDK silently fails and `completion.choices` is undefined.
     if (!process.env.ZAI_BASE_URL || !process.env.ZAI_API_KEY) {
       return NextResponse.json(
         {
           error:
-            "Z.ai API credentials not set. Go to Vercel → Settings → Environment Variables and add ZAI_BASE_URL=https://api.z.ai/api/paas/v4 and ZAI_API_KEY=<your-key>. Get a free key at https://z.ai/model-api.",
+            "Z.ai API credentials not set. Add ZAI_BASE_URL and ZAI_API_KEY in Vercel Settings → Environment Variables.",
         },
         { status: 500 }
       );
@@ -84,7 +81,7 @@ Return JSON only, following the schema in the system message.`;
     let completion;
     try {
       completion = await zai.chat.completions.create({
-        model: "glm-4.5",  // Z.ai public API requires explicit model name
+        model: "glm-4.5",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
@@ -99,26 +96,24 @@ Return JSON only, following the schema in the system message.`;
           error:
             "Z.ai API call failed: " +
             (apiErr as Error).message +
-            ". Check that ZAI_API_KEY is valid at https://z.ai/manage-apikey/apikey-list.",
+            ". Top up at https://z.ai/manage-apikey/billing if 429.",
         },
         { status: 502 }
       );
     }
 
-    // Defensive: Z.ai may return a non-standard shape on errors.
     if (
       !completion ||
       !completion.choices ||
       !Array.isArray(completion.choices) ||
       completion.choices.length === 0
     ) {
-      console.error("Unexpected Z.ai response:", JSON.stringify(completion).substring(0, 500));
+      console.error(
+        "Unexpected Z.ai response:",
+        JSON.stringify(completion).substring(0, 500)
+      );
       return NextResponse.json(
-        {
-          error:
-            "Z.ai returned an unexpected response (no choices array). Check that your API key has access to chat completions. Raw response logged to server.",
-          rawResponse: JSON.stringify(completion).substring(0, 300),
-        },
+        { error: "Z.ai returned no choices array", rawResponse: JSON.stringify(completion).substring(0, 300) },
         { status: 502 }
       );
     }
