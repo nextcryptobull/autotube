@@ -62,26 +62,43 @@ export async function POST(req: Request) {
     const updatedScenes: { id: string; imageUrl: string }[] = [];
     const errors: string[] = [];
 
-    // No sleep between scenes — Vercel Hobby tier has 60s function timeout.
-    // With standard quality, each image takes ~5-10s. 4 scenes = 20-40s, fits.
-    for (const scene of video.scenes) {
-      const fullPrompt = `${scene.brollPrompt}. ${styleCue}`;
-      try {
-        // Call Z.ai image gen API directly (bypass the SDK which fails
-        // when trying to download/convert images to base64)
-        const resp = await fetch(`${baseUrl}/images/generations`, {
+    // Retry helper with exponential backoff for Z.ai 429 rate limits.
+    // Image gen has strict per-second limits — even back-to-back calls hit 429.
+    async function fetchWithRetry(
+      url: string,
+      body: unknown,
+      maxRetries = 3
+    ): Promise<Response> {
+      let lastResp: Response | null = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const resp = await fetch(url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
             "Accept-Language": "en-US,en",
           },
-          body: JSON.stringify({
-            model: "glm-image",
-            prompt: fullPrompt,
-            size,
-            quality: "standard", // 5-10s vs 20s for "hd" — fits in 60s timeout
-          }),
+          body: JSON.stringify(body),
+        });
+        if (resp.status !== 429) return resp;
+        // 429 — back off and retry
+        lastResp = resp;
+        const waitMs = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s, 16s
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, waitMs));
+        }
+      }
+      return lastResp!;
+    }
+
+    for (const scene of video.scenes) {
+      const fullPrompt = `${scene.brollPrompt}. ${styleCue}`;
+      try {
+        const resp = await fetchWithRetry(`${baseUrl}/images/generations`, {
+          model: "glm-image",
+          prompt: fullPrompt,
+          size,
+          quality: "standard",
         });
         if (!resp.ok) {
           const errBody = await resp.text();
