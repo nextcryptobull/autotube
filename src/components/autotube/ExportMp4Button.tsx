@@ -35,54 +35,42 @@ function getExt(url: string): string {
   return "bin";
 }
 
-// Lazy-load ffmpeg.wasm from CDN (avoids Turbopack bundler issues with
-// the `new Worker(new URL(...))` pattern in the npm package).
-// We load the UMD bundle as a script tag, then use the global FFmpegWASM API.
+// Lazy-load ffmpeg.wasm from CDN via dynamic ESM imports (avoids
+// Turbopack's "new Worker(new URL(...))" build error).
+// We use esm.sh which serves ESM versions of any npm package, browser-ready.
+// The `new Function('import(...)')` trick prevents Turbopack from trying
+// to statically analyze and bundle the remote URL at build time.
 let ffmpegLoaderPromise: Promise<any> | null = null;
 
 async function loadFFmpegWasm(): Promise<any> {
   if (ffmpegLoaderPromise) return ffmpegLoaderPromise;
 
   ffmpegLoaderPromise = (async () => {
-    // Load the script from unpkg
-    const scriptUrl =
-      "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js";
-    const utilScriptUrl =
-      "https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js";
+    // Use Function constructor to bypass Turbopack's static analysis
+    // of dynamic imports. This is safe — we control the URLs.
+    const remoteImport = new Function(
+      "url",
+      "return import(url)"
+    ) as (url: string) => Promise<any>;
 
-    await new Promise<void>((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = utilScriptUrl;
-      script.onload = () => resolve();
-      script.onerror = () =>
-        reject(new Error("Failed to load ffmpeg util from CDN"));
-      document.head.appendChild(script);
-    });
+    // Load @ffmpeg/ffmpeg (the FFmpeg class) and @ffmpeg/util (toBlobURL helper)
+    const ffmpegMod = await remoteImport(
+      "https://esm.sh/@ffmpeg/ffmpeg@0.12.10"
+    );
+    const utilMod = await remoteImport(
+      "https://esm.sh/@ffmpeg/util@0.12.2"
+    );
 
-    await new Promise<void>((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = scriptUrl;
-      script.onload = () => resolve();
-      script.onerror = () =>
-        reject(new Error("Failed to load ffmpeg from CDN"));
-      document.head.appendChild(script);
-    });
-
-    // The UMD bundle exposes FFmpegWASM on window
-    const FFmpegWASM = (window as any).FFmpegWASM;
-    if (!FFmpegWASM?.FFmpeg) {
-      throw new Error("FFmpegWASM global not found after script load");
-    }
-
-    const { FFmpeg } = FFmpegWASM;
-    const { toBlobURL } = (window as any).FFmpegUtil;
-    if (!toBlobURL) {
-      throw new Error("FFmpegUtil.toBlobURL not found");
+    const { FFmpeg } = ffmpegMod;
+    const { toBlobURL } = utilMod;
+    if (!FFmpeg || !toBlobURL) {
+      throw new Error("Failed to load ffmpeg modules from esm.sh");
     }
 
     const ffmpeg = new FFmpeg();
 
-    // Load the core (single-threaded to avoid needing COOP/COEP)
+    // Load the core (single-threaded — works without SharedArrayBuffer,
+    // but we still set COOP/COEP headers in next.config.ts as safety)
     const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
     await ffmpeg.load({
       coreURL: await toBlobURL(

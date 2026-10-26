@@ -66,12 +66,13 @@ export async function POST(req: Request) {
     const fullPrompt = `${nextScene.brollPrompt}. ${styleCue}`;
 
     // Retry with exponential backoff for Z.ai 429 rate limits.
-    // Total worst case: 10s image gen + (2s + 4s) retries = 16s. Fits in 60s.
+    // Reduced from 3 retries to 2 to stay safely under Vercel's 60s timeout.
+    // Worst case: 10s image gen + 2s + 10s retry + 4s + 10s retry = 36s.
     let imageUrl: string | null = null;
     let lastError: string | null = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
+        await new Promise((r) => setTimeout(r, 2000)); // 2s backoff
       }
       try {
         const resp = await fetch(`${baseUrl}/images/generations`, {
@@ -91,7 +92,7 @@ export async function POST(req: Request) {
         if (!resp.ok) {
           const errBody = await resp.text();
           lastError = `HTTP ${resp.status}: ${errBody.substring(0, 200)}`;
-          if (resp.status === 429) continue; // retry
+          if (resp.status === 429) continue; // retry once more
           break; // non-retriable error
         }
         const result = (await resp.json()) as ZaiImageResponse;
