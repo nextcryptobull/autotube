@@ -11,7 +11,7 @@ interface Props {
   videoTitle: string;
 }
 
-// Helper: fetch a URL (or data: URL) and return as Uint8Array
+// Helper: fetch a URL (or data: URL) and return Uint8Array
 async function fetchAsBytes(url: string): Promise<Uint8Array> {
   const resp = await fetch(url);
   if (!resp.ok) {
@@ -30,10 +30,75 @@ function getExt(url: string): string {
   if (url.startsWith("data:audio/mpeg") || url.startsWith("data:audio/mp3"))
     return "mp3";
   if (url.startsWith("data:audio/wav")) return "wav";
-  // For remote URLs, try to extract from path
   const m = url.match(/\.(png|jpe?g|webp|mp3|wav|mp4|webm)(\?|$)/i);
   if (m) return m[1].toLowerCase();
   return "bin";
+}
+
+// Lazy-load ffmpeg.wasm from CDN (avoids Turbopack bundler issues with
+// the `new Worker(new URL(...))` pattern in the npm package).
+// We load the UMD bundle as a script tag, then use the global FFmpegWASM API.
+let ffmpegLoaderPromise: Promise<any> | null = null;
+
+async function loadFFmpegWasm(): Promise<any> {
+  if (ffmpegLoaderPromise) return ffmpegLoaderPromise;
+
+  ffmpegLoaderPromise = (async () => {
+    // Load the script from unpkg
+    const scriptUrl =
+      "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js";
+    const utilScriptUrl =
+      "https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/util.js";
+
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = utilScriptUrl;
+      script.onload = () => resolve();
+      script.onerror = () =>
+        reject(new Error("Failed to load ffmpeg util from CDN"));
+      document.head.appendChild(script);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = scriptUrl;
+      script.onload = () => resolve();
+      script.onerror = () =>
+        reject(new Error("Failed to load ffmpeg from CDN"));
+      document.head.appendChild(script);
+    });
+
+    // The UMD bundle exposes FFmpegWASM on window
+    const FFmpegWASM = (window as any).FFmpegWASM;
+    if (!FFmpegWASM?.FFmpeg) {
+      throw new Error("FFmpegWASM global not found after script load");
+    }
+
+    const { FFmpeg } = FFmpegWASM;
+    const { toBlobURL } = (window as any).FFmpegUtil;
+    if (!toBlobURL) {
+      throw new Error("FFmpegUtil.toBlobURL not found");
+    }
+
+    const ffmpeg = new FFmpeg();
+
+    // Load the core (single-threaded to avoid needing COOP/COEP)
+    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+    await ffmpeg.load({
+      coreURL: await toBlobURL(
+        `${baseURL}/ffmpeg-core.js`,
+        "text/javascript"
+      ),
+      wasmURL: await toBlobURL(
+        `${baseURL}/ffmpeg-core.wasm`,
+        "application/wasm"
+      ),
+    });
+
+    return ffmpeg;
+  })();
+
+  return ffmpegLoaderPromise;
 }
 
 export default function ExportMp4Button({ scenes, videoTitle }: Props) {
@@ -61,32 +126,13 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
     setDownloadUrl(null);
 
     try {
-      // Dynamically import ffmpeg (so it's not in the initial bundle)
-      const { FFmpeg } = await import("@ffmpeg/ffmpeg");
-      const { fetchFile, toBlobURL } = await import("@ffmpeg/util");
-
-      const ffmpeg = new FFmpeg();
-      ffmpeg.on("log", ({ message }) => {
-        // Optional: log ffmpeg progress for debugging
-        if (message.includes("frame=") || message.includes("time=")) {
-          // Could parse progress here
-        }
-      });
-      ffmpeg.on("progress", ({ progress: p }) => {
+      // Load ffmpeg.wasm from CDN (cached after first use)
+      toast.info("Loading ffmpeg.wasm (~30MB, cached after first use)...");
+      const ffmpeg = await loadFFmpegWasm();
+      ffmpeg.on("progress", ({ progress: p }: { progress: number }) => {
         setProgress(Math.round(p * 100));
       });
-
-      // Load ffmpeg core (single-threaded to avoid needing COOP/COEP headers)
-      // The core is loaded from a CDN — ~30MB, cached in browser after first load
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
-        wasmURL: await toBlobURL(
-          `${baseURL}/ffmpeg-core.wasm`,
-          "application/wasm"
-        ),
-      });
-      toast.success("ffmpeg.wasm loaded (~30MB cached)");
+      toast.success("ffmpeg.wasm loaded");
 
       // Step 1: Fetch all images and audio, write to ffmpeg FS
       setProgress(5);
@@ -99,9 +145,7 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
           const imgBytes = await fetchAsBytes(scene.imageUrl!);
           await ffmpeg.writeFile(`scene-${i}.${imgExt}`, imgBytes);
         } catch (err) {
-          // If image fetch fails (CORS on Z.ai URLs), try with proxy
-          console.warn(`Image fetch failed for scene ${i}:`, err);
-          toast.error(`Failed to fetch image for scene ${i}`);
+          toast.error(`Failed to fetch image for scene ${i + 1}`);
           throw err;
         }
 
@@ -109,8 +153,7 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
           const audBytes = await fetchAsBytes(scene.audioUrl!);
           await ffmpeg.writeFile(`scene-${i}.${audExt}`, audBytes);
         } catch (err) {
-          console.error(`Audio fetch failed for scene ${i}:`, err);
-          toast.error(`Failed to fetch audio for scene ${i}`);
+          toast.error(`Failed to fetch audio for scene ${i + 1}`);
           throw err;
         }
 
@@ -118,18 +161,12 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
       }
 
       // Step 2: For each scene, generate a clip (image as still video + audio)
-      // Use libx264 + aac, force 1280x720 output (16:9 standard YouTube)
       toast.info("Rendering scene clips...");
       for (let i = 0; i < scenesWithAssets.length; i++) {
         const scene = scenesWithAssets[i];
         const imgExt = getExt(scene.imageUrl!);
         const audExt = getExt(scene.audioUrl!);
 
-        // ffmpeg command:
-        // -loop 1 -i image.png -i audio.mp3
-        // -c:v libx264 -tune stillimage -c:a aac -b:a 192k
-        // -pix_fmt yuv420p -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-        // -shortest scene-i.mp4
         await ffmpeg.exec([
           "-loop",
           "1",
@@ -162,11 +199,13 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
 
       // Step 3: Concatenate all clips
       toast.info("Concatenating clips...");
-      // Write concat list file
       const listContent = scenesWithAssets
         .map((_, i) => `file 'clip-${i}.mp4'`)
         .join("\n");
-      await ffmpeg.writeFile("list.txt", new TextEncoder().encode(listContent));
+      await ffmpeg.writeFile(
+        "list.txt",
+        new TextEncoder().encode(listContent)
+      );
 
       await ffmpeg.exec([
         "-f",
@@ -206,12 +245,12 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
       const msg = (err as Error).message ?? "Unknown error";
       if (msg.includes("SharedArrayBuffer") || msg.includes("COEP")) {
         toast.error(
-          "ffmpeg.wasm needs COOP/COEP headers. Single-threaded mode should work — try refreshing the page.",
+          "ffmpeg.wasm needs COOP/COEP headers. Refresh the page and try again — headers are configured in next.config.ts.",
           { duration: 8000 }
         );
-      } else if (msg.includes("CORS") || msg.includes("Failed to fetch")) {
+      } else if (msg.includes("Failed to fetch")) {
         toast.error(
-          "Failed to fetch image/audio. The Z.ai image URLs may not allow CORS — try the per-scene audio (data URLs work without CORS).",
+          "Network error fetching assets. Check your connection and try again.",
           { duration: 8000 }
         );
       } else {
