@@ -62,8 +62,8 @@ export async function POST(req: Request) {
     const updatedScenes: { id: string; imageUrl: string }[] = [];
     const errors: string[] = [];
 
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
+    // No sleep between scenes — Vercel Hobby tier has 60s function timeout.
+    // With standard quality, each image takes ~5-10s. 4 scenes = 20-40s, fits.
     for (const scene of video.scenes) {
       const fullPrompt = `${scene.brollPrompt}. ${styleCue}`;
       try {
@@ -80,6 +80,7 @@ export async function POST(req: Request) {
             model: "glm-image",
             prompt: fullPrompt,
             size,
+            quality: "standard", // 5-10s vs 20s for "hd" — fits in 60s timeout
           }),
         });
         if (!resp.ok) {
@@ -88,7 +89,6 @@ export async function POST(req: Request) {
             `Scene ${scene.order}: HTTP ${resp.status} - ${errBody.substring(0, 200)}`
           );
           updatedScenes.push({ id: scene.id, imageUrl: "" });
-          await sleep(3000);
           continue;
         }
         const result = (await resp.json()) as ZaiImageResponse;
@@ -97,7 +97,6 @@ export async function POST(req: Request) {
           const errMsg = result.error?.message ?? "No URL in response";
           errors.push(`Scene ${scene.order}: ${errMsg}`);
           updatedScenes.push({ id: scene.id, imageUrl: "" });
-          await sleep(3000);
           continue;
         }
         await db.scene.update({
@@ -124,55 +123,18 @@ export async function POST(req: Request) {
         console.error("scene image fail", scene.id, errMsg);
         updatedScenes.push({ id: scene.id, imageUrl: "" });
       }
-      // Throttle to avoid Z.ai 429
-      await sleep(3000);
     }
 
-    // Optionally generate a thumbnail too
-    const scriptPayload = video.scriptJson
-      ? (JSON.parse(video.scriptJson) as { thumbnailPrompt?: string })
-      : null;
-    let thumbnailUrl: string | null = null;
-    if (scriptPayload?.thumbnailPrompt) {
-      try {
-        await sleep(2000);
-        const tResp = await fetch(`${baseUrl}/images/generations`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-            "Accept-Language": "en-US,en",
-          },
-          body: JSON.stringify({
-            model: "glm-image",
-            prompt: `${scriptPayload.thumbnailPrompt}. High contrast YouTube thumbnail style, bold focal subject, dark cinematic background, no text, no watermark`,
-            size: "1728x960", // 16:9 for YouTube thumbnail
-          }),
-        });
-        if (tResp.ok) {
-          const tResult = (await tResp.json()) as ZaiImageResponse;
-          thumbnailUrl = tResult.data?.[0]?.url ?? null;
-          if (thumbnailUrl) {
-            await db.videoProject.update({
-              where: { id: videoId },
-              data: { thumbnailUrl, status: "imaged" },
-            });
-          }
-        }
-      } catch (err) {
-        console.error("thumbnail fail", err);
-      }
-    } else {
-      await db.videoProject.update({
-        where: { id: videoId },
-        data: { status: "imaged" },
-      });
-    }
+    // Mark video as imaged (skip thumbnail to stay under 60s Vercel timeout)
+    await db.videoProject.update({
+      where: { id: videoId },
+      data: { status: "imaged" },
+    });
 
     return NextResponse.json({
       ok: true,
       scenes: updatedScenes,
-      thumbnailUrl,
+      thumbnailUrl: null,
       errors: errors.length > 0 ? errors : undefined,
     });
   } catch (e) {
