@@ -112,19 +112,43 @@ export default function StudioTab({
     if (!currentVideo) return;
     setVoicing(true);
     try {
-      const res = await fetch("/api/content/voiceover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: currentVideo.id }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error ?? "Voiceover failed");
-        return;
+      // Loop the voiceover endpoint — one scene per call (fits Vercel 60s timeout)
+      let totalProcessed = 0;
+      const maxCalls = 12;
+      for (let i = 0; i < maxCalls; i++) {
+        const res = await fetch("/api/content/voiceover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: currentVideo.id }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error ?? `Voiceover failed on scene ${i + 1}`);
+          break;
+        }
+        const data = await res.json();
+        if (data.done) {
+          toast.success(`All scenes voiced (${totalProcessed} scenes)`);
+          return;
+        }
+        if (data.audioUrl) {
+          totalProcessed++;
+          setCurrentVideo((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              scenes: prev.scenes?.map((s) =>
+                s.id === data.sceneId ? { ...s, audioUrl: data.audioUrl } : s
+              ),
+            };
+          });
+        }
       }
-      const data = await res.json();
-      setCurrentVideo({ ...currentVideo, voiceoverUrl: data.url, status: "voiced" });
-      toast.success("Voiceover ready");
+      if (totalProcessed > 0) {
+        toast.success(`Generated ${totalProcessed} scene audio (some may need re-running)`);
+      } else {
+        toast.error("No voiceover generated — StreamElements may be rate-limiting");
+      }
     } catch (e) {
       toast.error("Network error");
     } finally {
