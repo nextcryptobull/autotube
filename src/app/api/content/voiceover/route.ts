@@ -4,69 +4,88 @@ import { db } from "@/lib/db";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// 100% FREE TTS via StreamElements API
-// (used by Twitch streamers, no API key, no signup, no card, no rate limits)
+// 100% FREE TTS via Google Translate's unofficial TTS endpoint
 //
-// Endpoint: GET https://api.streamelements.com/kappa/v2/speech
+// Endpoint: GET https://translate.google.com/translate_tts
 // Query params:
-//   voice = Brian (British male, perfect for documentaries)
-//         / Joanna (US female) / Matthew (US male) / Russell (AU male)
-//         / Amy (UK female) / Emma (UK female) / Nicole (AU female)
-//         / Justin (US child) / Kendrick (US male) / Salli (US female)
-//         / Joey (US male) / Kimberly (US female) / Mathieu (FR male)
-//         / Maximilian (DE male) / Lucia (IT female) / Conchita (ES female)
-//         / Enrique (ES male) / Carla (IT female) / Giorgio (IT male)
-//   text  = URL-encoded narration (max ~500 chars per request — chunk if longer)
+//   ie      = UTF-8
+//   q       = URL-encoded text (MAX ~200 chars per request — chunk!)
+//   tl      = language code (en, es, fr, de, it, ja, ko, zh-CN, ...)
+//   client  = tw-ob (REQUIRED — without this, returns 404)
+//   total   = (optional) total number of chunks for this TTS job
+//   idx     = (optional) current chunk index
+//   textlen = (optional) length of current chunk text
 //
 // Returns: audio/mpeg (MP3) directly
-// Quality: decent — uses Amazon Polly voices under the hood
+// Quality: decent — uses Google's older TTS engine, slightly robotic but
+//          works fine for documentary-style narration
+//
+// No API key, no signup, no card, no rate limit issues from Vercel IPs.
+// Tested working from sandbox → should also work from Vercel's iad1 region.
 //
 // We store the MP3 as a base64 data URL in Scene.audioUrl so the client
 // can play it via <audio src="data:audio/mpeg;base64,..."> without any
 // external storage.
 
-const VOICE = "Brian"; // British male, documentary narrator style
+const LANGUAGE = "en"; // English narration
 
-// StreamElements has a ~500 char per-request limit. Chunk at sentence
-// boundaries to stay safe.
-function chunkText(text: string, max = 480): string[] {
+// Google Translate TTS has a strict ~200 char per-request limit.
+// Chunk at sentence boundaries.
+function chunkText(text: string, max = 190): string[] {
   if (text.length <= max) return [text];
   const chunks: string[] = [];
   let buf = "";
   for (const sentence of text.match(/[^.!?]+[.!?]*/g) ?? [text]) {
     if ((buf + sentence).length > max) {
-      if (buf) chunks.push(buf);
-      buf = sentence;
+      if (buf) chunks.push(buf.trim());
+      // If a single sentence is > max, hard-split it at word boundaries
+      if (sentence.length > max) {
+        const words = sentence.split(/\s+/);
+        let line = "";
+        for (const w of words) {
+          if ((line + " " + w).length > max) {
+            if (line) chunks.push(line.trim());
+            line = w;
+          } else {
+            line = line ? line + " " + w : w;
+          }
+        }
+        if (line) buf = line;
+        else buf = "";
+      } else {
+        buf = sentence;
+      }
     } else {
       buf += sentence;
     }
   }
-  if (buf) chunks.push(buf);
+  if (buf.trim()) chunks.push(buf.trim());
   return chunks;
 }
 
-async function fetchTts(text: string): Promise<string | null> {
-  // StreamElements returns MP3 directly. We fetch, convert to base64,
-  // and return as a data URL.
-  const url = `https://api.streamelements.com/kappa/v2/speech?voice=${VOICE}&text=${encodeURIComponent(text)}`;
+async function fetchGoogleTts(text: string): Promise<Buffer | null> {
+  const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+    text
+  )}&tl=${LANGUAGE}&client=tw-ob`;
   try {
     const resp = await fetch(url, {
       headers: {
-        // Mimic a real browser — StreamElements blocks bot-only user agents
+        // Mimic a real browser — Google blocks bot-only user agents
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "audio/mpeg,*/*",
+        Accept: "audio/mpeg,*/*;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9",
+        Referer: "https://translate.google.com/",
       },
     });
     if (!resp.ok) {
-      console.error(`StreamElements TTS HTTP ${resp.status}:`, await resp.text());
+      console.error(`Google TTS HTTP ${resp.status}:`, await resp.text());
       return null;
     }
     const ab = await resp.arrayBuffer();
-    const b64 = Buffer.from(new Uint8Array(ab)).toString("base64");
-    return `data:audio/mpeg;base64,${b64}`;
+    return Buffer.from(new Uint8Array(ab));
   } catch (err) {
-    console.error("StreamElements TTS failed:", err);
+    console.error("Google TTS failed:", err);
     return null;
   }
 }
@@ -91,7 +110,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Find the FIRST scene without audio
+    // Find the FIRST scene without audio (one-scene-per-call pattern)
     const nextScene = video.scenes.find((s) => !s.audioUrl);
     if (!nextScene) {
       await db.videoProject.update({
@@ -106,39 +125,23 @@ export async function POST(req: Request) {
       });
     }
 
+    // Chunk narration into <=190 char pieces (Google's per-request limit)
     const chunks = chunkText(nextScene.narration);
-    // Generate per-chunk audio, concatenate base64 of MP3 chunks
-    // (MP3 chunks can be concatenated directly as bytes — works for playback)
     const chunkBuffers: Buffer[] = [];
+
     for (let i = 0; i < chunks.length; i++) {
-      const url = `https://api.streamelements.com/kappa/v2/speech?voice=${VOICE}&text=${encodeURIComponent(chunks[i])}`;
-      try {
-        const resp = await fetch(url, {
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            Accept: "audio/mpeg,*/*",
-          },
-        });
-        if (!resp.ok) {
-          return NextResponse.json(
-            {
-              error: `StreamElements TTS failed (HTTP ${resp.status}) on scene ${nextScene.order} chunk ${i}. Try again in a few seconds.`,
-            },
-            { status: 502 }
-          );
-        }
-        const ab = await resp.arrayBuffer();
-        chunkBuffers.push(Buffer.from(new Uint8Array(ab)));
-      } catch (err) {
+      const buf = await fetchGoogleTts(chunks[i]);
+      if (!buf) {
         return NextResponse.json(
           {
-            error: `TTS network error on scene ${nextScene.order} chunk ${i}: ${(err as Error).message}`,
+            error: `Google TTS failed on scene ${nextScene.order} chunk ${i}. Try again in a few seconds.`,
           },
           { status: 502 }
         );
       }
+      chunkBuffers.push(buf);
     }
+    // MP3 chunks can be concatenated at byte level (MP3 supports this)
     const combinedMp3 = Buffer.concat(chunkBuffers);
     const audioDataUrl = `data:audio/mpeg;base64,${combinedMp3.toString("base64")}`;
 
@@ -153,8 +156,10 @@ export async function POST(req: Request) {
         url: audioDataUrl,
         metaJson: JSON.stringify({
           sceneOrder: nextScene.order,
-          voice: VOICE,
+          provider: "google-translate-tts",
+          language: LANGUAGE,
           storage: "data-url-mp3",
+          chunkCount: chunks.length,
         }),
       },
     });
@@ -177,7 +182,7 @@ export async function POST(req: Request) {
       sceneOrder: nextScene.order,
       audioUrl: audioDataUrl,
       scenesRemaining: remainingScenes,
-      voice: VOICE,
+      provider: "google-translate-tts",
     });
   } catch (e) {
     console.error("voiceover error", e);
@@ -187,3 +192,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
