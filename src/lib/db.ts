@@ -1,55 +1,63 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaLibSQL } from "@prisma/adapter-libsql";
-import { createClient } from "@libsql/client";
+
+/**
+ * AutoTube Studio database client.
+ *
+ * Routes based on the DATABASE_URL scheme:
+ *   - `file:...`     → use Prisma's built-in SQLite engine (local dev)
+ *   - `libsql://...` → use the libsql driver adapter (Turso / Vercel)
+ *
+ * Lazy-initialized via a Proxy so the client is created only on the first DB
+ * method call, NOT at module load. This is critical for Vercel — Next.js
+ * bundles API route modules at build time, and we don't want to instantiate
+ * PrismaClient (which validates DATABASE_URL) during `next build`.
+ */
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-/**
- * Lazily instantiate the Prisma client.
- *
- * Why lazy: Next.js bundles API route modules at build time, which means
- * `db.ts` is imported during `next build`. If we eagerly create the Prisma
- * client (which calls `createClient({url})` from @libsql/client), the libsql
- * client will try to parse DATABASE_URL during the build — and fail if the
- * URL is missing or invalid (e.g. the user hasn't set their Turso URL yet).
- *
- * With lazy init via a Proxy, the Prisma client is only created on the first
- * actual DB method call (which only happens at request time, not build time).
- * This decouples build-time bundling from runtime DB access.
- */
-function getClient(): PrismaClient {
-  if (globalForPrisma.prisma) return globalForPrisma.prisma;
-
+function createPrismaClient(): PrismaClient {
   const url = process.env.DATABASE_URL;
   if (!url) {
     throw new Error(
-      "DATABASE_URL environment variable is not set. " +
-        "For local dev: DATABASE_URL=file:./db/custom.db. " +
-        "For Turso: DATABASE_URL=libsql://<host>?authToken=<token> " +
-        "(get yours from `turso db show autotube --url` and " +
-        "`turso db tokens create autotube`)."
+      "DATABASE_URL is not set. " +
+        "Local dev: DATABASE_URL=file:./db/custom.db. " +
+        "Turso: DATABASE_URL=libsql://<host>?authToken=<token> " +
+        "(get yours via `bash deploy/turso-setup.sh`)."
     );
   }
 
-  // libsql client accepts BOTH "file:./local.db" and "libsql://..." URLs.
-  const libsql = createClient({ url });
-  const adapter = new PrismaLibSQL(libsql);
-  globalForPrisma.prisma = new PrismaClient({ adapter });
+  if (url.startsWith("libsql://") || url.startsWith("libsql:")) {
+    // Use the libsql driver adapter for Turso / remote libSQL servers.
+    // Dynamic import to avoid bundling the adapter when running locally
+    // with a file: URL (which uses Prisma's built-in SQLite engine).
+    const { PrismaLibSQL } = require("@prisma/adapter-libsql");
+    const { createClient } = require("@libsql/client");
+    const libsql = createClient({ url });
+    const adapter = new PrismaLibSQL(libsql);
+    return new PrismaClient({ adapter });
+  }
+
+  // file: URLs (local SQLite) — use Prisma's native engine, no adapter needed.
+  return new PrismaClient({
+    log: process.env.NODE_ENV === "production" ? ["error"] : ["query"],
+  });
+}
+
+function getClient(): PrismaClient {
+  if (globalForPrisma.prisma) return globalForPrisma.prisma;
+  globalForPrisma.prisma = createPrismaClient();
   return globalForPrisma.prisma;
 }
 
-// Proxy that triggers lazy init on first property access.
-// This means `db.niche.findMany()` works exactly as before — the client
-// is created on the first call, not at module load time.
+// Lazy Proxy: PrismaClient is only created on first DB method call.
 export const db = new Proxy({} as PrismaClient, {
   get(_target, prop) {
     const client = getClient();
-    const value = (client as never as Record<string | symbol, unknown>)[prop];
-    // Bind methods so `this` is preserved when destructured
+    const value = Reflect.get(client, prop);
     if (typeof value === "function") {
-      return (value as (...args: unknown[]) => unknown).bind(client);
+      return value.bind(client);
     }
     return value;
   },
