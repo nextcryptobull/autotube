@@ -136,31 +136,55 @@ export default function StudioTab({
     if (!currentVideo) return;
     setImaging(true);
     try {
-      const res = await fetch("/api/content/scene-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: currentVideo.id }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error ?? "Image generation failed");
-        return;
+      // New API: process ONE scene per call (to fit Vercel's 60s timeout).
+      // Call repeatedly until done.
+      let totalProcessed = 0;
+      const maxCalls = 12; // safety cap (long-form has 8-12 scenes)
+      for (let i = 0; i < maxCalls; i++) {
+        const res = await fetch("/api/content/scene-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId: currentVideo.id }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err.error ?? `Image gen failed on scene ${i + 1}`);
+          break;
+        }
+        const data = await res.json();
+        if (data.done) {
+          // All scenes imaged — refresh the video to show all images
+          const allRes = await fetch("/api/videos");
+          if (allRes.ok) {
+            const allData = await allRes.json();
+            const v = (allData.videos as VideoProject[]).find(
+              (x) => x.id === currentVideo.id
+            );
+            if (v) setCurrentVideo(v);
+          }
+          toast.success(`All scene images generated (${totalProcessed} scenes)`);
+          return;
+        }
+        if (data.imageUrl) {
+          totalProcessed++;
+          // Update the current video's scenes locally to show progress
+          setCurrentVideo((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              scenes: prev.scenes?.map((s) =>
+                s.id === data.sceneId ? { ...s, imageUrl: data.imageUrl } : s
+              ),
+            };
+          });
+        }
       }
-      const data = await res.json();
-      // Refresh the video to get scene images
-      const vRes = await fetch(`/api/videos?id=${currentVideo.id}`);
-      // We don't have a single-video endpoint; refetch all and find
-      const allRes = await fetch("/api/videos");
-      if (allRes.ok) {
-        const allData = await allRes.json();
-        const v = (allData.videos as VideoProject[]).find(
-          (x) => x.id === currentVideo.id
-        );
-        if (v) setCurrentVideo(v);
+      // Loop completed without done=true — partial success
+      if (totalProcessed > 0) {
+        toast.success(`Generated ${totalProcessed} scene images (some may need re-running)`);
+      } else {
+        toast.error("No scene images generated — Z.ai rate limit may be active");
       }
-      toast.success("Scene images generated", {
-        description: data.thumbnailUrl ? "Thumbnail ready too" : "",
-      });
     } catch (e) {
       toast.error("Network error");
     } finally {

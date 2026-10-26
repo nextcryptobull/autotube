@@ -2,19 +2,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 60;
 
-// Z.ai public API image generation returns {data: [{url: "..."}]} — a
-// temporary URL (30-day expiry) instead of base64 data. We bypass the
-// z-ai-web-dev-sdk (which tries to download & convert to base64 and fails)
-// and call the endpoint directly with fetch.
+// Process ONE scene per call (the first unimaged scene for the video).
+// The client calls this endpoint multiple times to process all scenes.
+// Each call fits comfortably within Vercel's 60s Hobby-tier timeout.
 //
-// The URL is stored in Scene.imageUrl. The client renders via
-// <img src={url}> which works fine with remote URLs.
-//
-// Tradeoff: URLs expire after 30 days. For long-term storage, switch
-// to Cloudflare R2 (free 10GB) — fetch the image from Z.ai, upload to
-// R2, store the R2 URL.
+// Z.ai's image gen API:
+// - Endpoint: POST {baseUrl}/images/generations
+// - Model: glm-image
+// - Returns: { data: [{ url: "https://..." }] } (URL valid for 30 days)
+// - Rate limit: strict per-second, needs retry with backoff
 
 interface ZaiImageResponse {
   created?: number;
@@ -31,16 +29,26 @@ export async function POST(req: Request) {
     }
     const video = await db.videoProject.findUnique({
       where: { id: videoId },
-      include: { scenes: { orderBy: { order: "asc" } }, niche: true },
+      include: { scenes: { orderBy: { order: "asc" } } },
     });
     if (!video) {
       return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
-    if (!video.scenes.length) {
-      return NextResponse.json(
-        { error: "No scenes to image. Generate script first." },
-        { status: 400 }
-      );
+
+    // Find the FIRST scene without an imageUrl
+    const nextScene = video.scenes.find((s) => !s.imageUrl);
+    if (!nextScene) {
+      // All scenes have images — mark video as imaged and return done
+      await db.videoProject.update({
+        where: { id: videoId },
+        data: { status: "imaged" },
+      });
+      return NextResponse.json({
+        ok: true,
+        done: true,
+        message: "All scenes already have images",
+        scenesRemaining: 0,
+      });
     }
 
     const baseUrl = process.env.ZAI_BASE_URL;
@@ -52,107 +60,103 @@ export async function POST(req: Request) {
       );
     }
 
-    // Z.ai's glm-image model accepts only certain sizes — use 1280x1280
-    // (default) which always works. For shorts, also 1280x1280 (square
-    // works for vertical too — the AI generates appropriately).
     const size = "1280x1280";
     const styleCue =
       "cinematic documentary still, dramatic lighting, depth of field, rich color grade, no text overlay, no watermark, no logo";
+    const fullPrompt = `${nextScene.brollPrompt}. ${styleCue}`;
 
-    const updatedScenes: { id: string; imageUrl: string }[] = [];
-    const errors: string[] = [];
-
-    // Retry helper with exponential backoff for Z.ai 429 rate limits.
-    // Image gen has strict per-second limits — even back-to-back calls hit 429.
-    async function fetchWithRetry(
-      url: string,
-      body: unknown,
-      maxRetries = 3
-    ): Promise<Response> {
-      let lastResp: Response | null = null;
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        const resp = await fetch(url, {
+    // Retry with exponential backoff for Z.ai 429 rate limits.
+    // Total worst case: 10s image gen + (2s + 4s) retries = 16s. Fits in 60s.
+    let imageUrl: string | null = null;
+    let lastError: string | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt - 1)));
+      }
+      try {
+        const resp = await fetch(`${baseUrl}/images/generations`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
             "Accept-Language": "en-US,en",
           },
-          body: JSON.stringify(body),
-        });
-        if (resp.status !== 429) return resp;
-        // 429 — back off and retry
-        lastResp = resp;
-        const waitMs = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s, 16s
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, waitMs));
-        }
-      }
-      return lastResp!;
-    }
-
-    for (const scene of video.scenes) {
-      const fullPrompt = `${scene.brollPrompt}. ${styleCue}`;
-      try {
-        const resp = await fetchWithRetry(`${baseUrl}/images/generations`, {
-          model: "glm-image",
-          prompt: fullPrompt,
-          size,
-          quality: "standard",
+          body: JSON.stringify({
+            model: "glm-image",
+            prompt: fullPrompt,
+            size,
+            quality: "standard", // 5-10s vs 20s for hd
+          }),
         });
         if (!resp.ok) {
           const errBody = await resp.text();
-          errors.push(
-            `Scene ${scene.order}: HTTP ${resp.status} - ${errBody.substring(0, 200)}`
-          );
-          updatedScenes.push({ id: scene.id, imageUrl: "" });
-          continue;
+          lastError = `HTTP ${resp.status}: ${errBody.substring(0, 200)}`;
+          if (resp.status === 429) continue; // retry
+          break; // non-retriable error
         }
         const result = (await resp.json()) as ZaiImageResponse;
-        const imageUrl = result.data?.[0]?.url;
-        if (!imageUrl) {
-          const errMsg = result.error?.message ?? "No URL in response";
-          errors.push(`Scene ${scene.order}: ${errMsg}`);
-          updatedScenes.push({ id: scene.id, imageUrl: "" });
-          continue;
-        }
-        await db.scene.update({
-          where: { id: scene.id },
-          data: { imageUrl },
-        });
-        await db.generatedAsset.create({
-          data: {
-            videoId,
-            type: "scene-image",
-            url: imageUrl,
-            metaJson: JSON.stringify({
-              sceneOrder: scene.order,
-              size,
-              storage: "zai-remote-url",
-              expires: "30 days",
-            }),
-          },
-        });
-        updatedScenes.push({ id: scene.id, imageUrl });
+        imageUrl = result.data?.[0]?.url ?? null;
+        if (imageUrl) break;
+        lastError = result.error?.message ?? "No URL in response";
+        break;
       } catch (err) {
-        const errMsg = (err as Error).message ?? "Unknown error";
-        errors.push(`Scene ${scene.order}: ${errMsg}`);
-        console.error("scene image fail", scene.id, errMsg);
-        updatedScenes.push({ id: scene.id, imageUrl: "" });
+        lastError = (err as Error).message;
       }
     }
 
-    // Mark video as imaged (skip thumbnail to stay under 60s Vercel timeout)
-    await db.videoProject.update({
-      where: { id: videoId },
-      data: { status: "imaged" },
+    if (!imageUrl) {
+      return NextResponse.json(
+        {
+          ok: false,
+          done: false,
+          sceneId: nextScene.id,
+          sceneOrder: nextScene.order,
+          error: lastError ?? "Failed to generate image",
+          scenesRemaining:
+            video.scenes.filter((s) => !s.imageUrl).length,
+        },
+        { status: 502 }
+      );
+    }
+
+    // Save the image URL to the scene
+    await db.scene.update({
+      where: { id: nextScene.id },
+      data: { imageUrl },
     });
+    await db.generatedAsset.create({
+      data: {
+        videoId,
+        type: "scene-image",
+        url: imageUrl,
+        metaJson: JSON.stringify({
+          sceneOrder: nextScene.order,
+          size,
+          storage: "zai-remote-url",
+          expires: "30 days",
+        }),
+      },
+    });
+
+    const remainingScenes = video.scenes.filter(
+      (s) => s.order > nextScene.order && !s.imageUrl
+    ).length;
+
+    // If this was the last scene, mark the video as imaged
+    if (nextScene.order === video.scenes[video.scenes.length - 1].order) {
+      await db.videoProject.update({
+        where: { id: videoId },
+        data: { status: "imaged" },
+      });
+    }
 
     return NextResponse.json({
       ok: true,
-      scenes: updatedScenes,
-      thumbnailUrl: null,
-      errors: errors.length > 0 ? errors : undefined,
+      done: remainingScenes === 0,
+      sceneId: nextScene.id,
+      sceneOrder: nextScene.order,
+      imageUrl,
+      scenesRemaining: remainingScenes,
     });
   } catch (e) {
     console.error("scene image error", e);
