@@ -76,6 +76,14 @@ export async function GET() {
       TURSO_AUTH_TOKEN: redact(tursoToken, "TURSO_AUTH_TOKEN"),
       ZAI_BASE_URL: redact(process.env.ZAI_BASE_URL, "ZAI_BASE_URL"),
       ZAI_API_KEY: redact(process.env.ZAI_API_KEY, "ZAI_API_KEY"),
+      CLOUDFLARE_ACCOUNT_ID: redact(
+        process.env.CLOUDFLARE_ACCOUNT_ID,
+        "CLOUDFLARE_ACCOUNT_ID"
+      ),
+      CLOUDFLARE_API_TOKEN: redact(
+        process.env.CLOUDFLARE_API_TOKEN,
+        "CLOUDFLARE_API_TOKEN"
+      ),
     },
     databaseUrlAnalysis: urlAnalysis,
     troubleshooting: !dbUrl

@@ -4,21 +4,27 @@ import { db } from "@/lib/db";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Process ONE scene per call (the first unimaged scene for the video).
-// The client calls this endpoint multiple times to process all scenes.
-// Each call fits comfortably within Vercel's 60s Hobby-tier timeout.
+// Cloudflare Workers AI — free tier, fast image generation (3-10s per image)
 //
-// Z.ai's image gen API:
-// - Endpoint: POST {baseUrl}/images/generations
-// - Model: glm-image
-// - Returns: { data: [{ url: "https://..." }] } (URL valid for 30 days)
-// - Rate limit: strict per-second, needs retry with backoff
+// Free tier: 10,000 Neurons/day (~50-100 image generations)
+// Models:
+//   - @cf/blackforestlabs/flux-1-schnell (fastest, 3-5s, good quality)
+//   - @cf/stability/stable-diffusion-xl-base-1.0 (better quality, 8-12s)
+//   - @cf/stability/stable-diffusion-512-v2-1 (older, 4-6s)
+//
+// API: POST https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model}
+// Headers: Authorization: Bearer {API_TOKEN}
+// Body: { "prompt": "..." }
+// Response: image/jpeg binary (NOT JSON)
+//
+// We convert to base64 data URL and store in Scene.imageUrl.
+// Free, no rate limits worth mentioning, ~5s per image typically.
 
-interface ZaiImageResponse {
-  created?: number;
-  data?: Array<{ url?: string; b64_json?: string }>;
-  content_filter?: unknown[];
-  error?: { code?: string | number; message?: string };
+const CF_MODEL = "@cf/blackforestlabs/flux-1-schnell";
+
+interface CFErrorResponse {
+  success: boolean;
+  errors: { code: number; message: string }[];
 }
 
 export async function POST(req: Request) {
@@ -35,10 +41,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Video not found" }, { status: 404 });
     }
 
-    // Find the FIRST scene without an imageUrl
+    // Find the FIRST scene without an image (one-scene-per-call pattern)
     const nextScene = video.scenes.find((s) => !s.imageUrl);
     if (!nextScene) {
-      // All scenes have images — mark video as imaged and return done
       await db.videoProject.update({
         where: { id: videoId },
         data: { status: "imaged" },
@@ -51,70 +56,132 @@ export async function POST(req: Request) {
       });
     }
 
-    const baseUrl = process.env.ZAI_BASE_URL;
-    const apiKey = process.env.ZAI_API_KEY;
-    if (!baseUrl || !apiKey) {
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+    if (!accountId || !apiToken) {
       return NextResponse.json(
-        { error: "Z.ai API credentials not set" },
+        {
+          error:
+            "Cloudflare Workers AI credentials not set. Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN on Vercel. Get them at https://dash.cloudflare.com → Workers & Pages → AI → API Tokens.",
+        },
         { status: 500 }
       );
     }
 
-    const size = "1280x1280";
     const styleCue =
       "cinematic documentary still, dramatic lighting, depth of field, rich color grade, no text overlay, no watermark, no logo";
     const fullPrompt = `${nextScene.brollPrompt}. ${styleCue}`;
 
-    // Retry with exponential backoff for Z.ai 429 rate limits.
-    // Reduced from 3 retries to 2 to stay safely under Vercel's 60s timeout.
-    // Also add 45s AbortController per fetch call — if Z.ai is slow, we fail
-    // cleanly with a clear error instead of Vercel's FUNCTION_INVOCATION_TIMEOUT.
-    let imageUrl: string | null = null;
+    // Retry with 45s abort timeout per call (Cloudflare is usually 3-10s,
+    // but heavy load can push it to 30-40s on first cold start)
+    let imageBytes: Uint8Array | null = null;
     let lastError: string | null = null;
+
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, 2000)); // 2s backoff
+        await new Promise((r) => setTimeout(r, 2000));
       }
       try {
-        // Abort if Z.ai takes >45s — return a clean error rather than
-        // letting Vercel's 60s function timeout kill us.
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45000);
-        const resp = await fetch(`${baseUrl}/images/generations`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-            "Accept-Language": "en-US,en",
-          },
-          body: JSON.stringify({
-            model: "glm-image",
-            prompt: fullPrompt,
-            size,
-            quality: "standard", // 5-10s vs 20s for hd (but Z.ai often takes 30-40s actual)
-          }),
-          signal: controller.signal,
-        });
+
+        const resp = await fetch(
+          `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${CF_MODEL}`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ prompt: fullPrompt }),
+            signal: controller.signal,
+          }
+        );
         clearTimeout(timeoutId);
+
         if (!resp.ok) {
+          // Cloudflare returns JSON error body
           const errBody = await resp.text();
           lastError = `HTTP ${resp.status}: ${errBody.substring(0, 200)}`;
-          if (resp.status === 429) continue; // retry once more
+          if (resp.status === 429) continue; // retry on rate limit
           break; // non-retriable error
         }
-        const result = (await resp.json()) as ZaiImageResponse;
-        imageUrl = result.data?.[0]?.url ?? null;
-        if (imageUrl) break;
-        lastError = result.error?.message ?? "No URL in response";
-        break;
+
+        // Cloudflare returns image binary directly (image/jpeg)
+        // The content-type header tells us which format
+        const contentType = resp.headers.get("content-type") ?? "image/jpeg";
+        const ab = await resp.arrayBuffer();
+        imageBytes = new Uint8Array(ab);
+
+        if (imageBytes.length === 0) {
+          // Sometimes Cloudflare returns JSON error with 200 status
+          const errJson = JSON.parse(
+            new TextDecoder().decode(ab)
+          ) as CFErrorResponse;
+          lastError =
+            errJson.errors?.[0]?.message ?? "Empty response from Cloudflare";
+          break;
+        }
+
+        // Get the format from content-type
+        const fmt = contentType.includes("png")
+          ? "png"
+          : contentType.includes("webp")
+          ? "webp"
+          : "jpeg";
+
+        // Convert to base64 data URL
+        const b64 = Buffer.from(imageBytes).toString("base64");
+        const dataUrl = `data:image/${fmt};base64,${b64}`;
+
+        await db.scene.update({
+          where: { id: nextScene.id },
+          data: { imageUrl: dataUrl },
+        });
+        await db.generatedAsset.create({
+          data: {
+            videoId,
+            type: "scene-image",
+            url: dataUrl,
+            metaJson: JSON.stringify({
+              sceneOrder: nextScene.order,
+              provider: "cloudflare-workers-ai",
+              model: CF_MODEL,
+              storage: "data-url",
+              size: "1024x1024 (CF default)",
+            }),
+          },
+        });
+
+        const remainingScenes = video.scenes.filter(
+          (s) => s.order > nextScene.order && !s.imageUrl
+        ).length;
+
+        if (
+          nextScene.order === video.scenes[video.scenes.length - 1].order
+        ) {
+          await db.videoProject.update({
+            where: { id: videoId },
+            data: { status: "imaged" },
+          });
+        }
+
+        return NextResponse.json({
+          ok: true,
+          done: remainingScenes === 0,
+          sceneId: nextScene.id,
+          sceneOrder: nextScene.order,
+          imageUrl: dataUrl,
+          scenesRemaining: remainingScenes,
+          provider: "cloudflare-workers-ai",
+        });
       } catch (err) {
         const errMsg = (err as Error).message;
         if (errMsg.includes("aborted") || errMsg.includes("timeout")) {
-          // Z.ai was too slow — return clean error, client will retry on next click
           return NextResponse.json(
             {
               error:
-                "Z.ai image generation took too long (>45s). Click 'Generate Scene Images' again to retry — the same scene will be retried.",
+                "Cloudflare AI took too long (>45s). Click Generate Scene Images again to retry.",
             },
             { status: 504 }
           );
@@ -123,60 +190,17 @@ export async function POST(req: Request) {
       }
     }
 
-    if (!imageUrl) {
-      return NextResponse.json(
-        {
-          ok: false,
-          done: false,
-          sceneId: nextScene.id,
-          sceneOrder: nextScene.order,
-          error: lastError ?? "Failed to generate image",
-          scenesRemaining:
-            video.scenes.filter((s) => !s.imageUrl).length,
-        },
-        { status: 502 }
-      );
-    }
-
-    // Save the image URL to the scene
-    await db.scene.update({
-      where: { id: nextScene.id },
-      data: { imageUrl },
-    });
-    await db.generatedAsset.create({
-      data: {
-        videoId,
-        type: "scene-image",
-        url: imageUrl,
-        metaJson: JSON.stringify({
-          sceneOrder: nextScene.order,
-          size,
-          storage: "zai-remote-url",
-          expires: "30 days",
-        }),
+    return NextResponse.json(
+      {
+        ok: false,
+        sceneId: nextScene.id,
+        sceneOrder: nextScene.order,
+        error:
+          lastError ??
+          "Cloudflare Workers AI failed to generate image. Check your CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN env vars.",
       },
-    });
-
-    const remainingScenes = video.scenes.filter(
-      (s) => s.order > nextScene.order && !s.imageUrl
-    ).length;
-
-    // If this was the last scene, mark the video as imaged
-    if (nextScene.order === video.scenes[video.scenes.length - 1].order) {
-      await db.videoProject.update({
-        where: { id: videoId },
-        data: { status: "imaged" },
-      });
-    }
-
-    return NextResponse.json({
-      ok: true,
-      done: remainingScenes === 0,
-      sceneId: nextScene.id,
-      sceneOrder: nextScene.order,
-      imageUrl,
-      scenesRemaining: remainingScenes,
-    });
+      { status: 502 }
+    );
   } catch (e) {
     console.error("scene image error", e);
     return NextResponse.json(
