@@ -10,6 +10,7 @@ export interface Niche {
   competition: number;
   evergreenFactor: number;
   automationEase: number;
+  monetizationSafety: number;
   compositeScore: number;
   sampleChannels: string | null;
   bestFor: string;

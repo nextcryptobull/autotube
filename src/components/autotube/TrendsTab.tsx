@@ -138,12 +138,20 @@ export default function TrendsTab() {
                   <th className="text-left px-4 py-2 font-medium">#</th>
                   <th className="text-left px-4 py-2 font-medium">Niche</th>
                   <th className="text-left px-4 py-2 font-medium">Category</th>
-                  <th className="text-right px-4 py-2 font-medium">CPM $</th>
-                  <th className="text-right px-4 py-2 font-medium">Shorts RPM</th>
+                  <th className="text-right px-4 py-2 font-medium" title="What YouTube charges advertisers. Creator keeps ~55% for long-form.">
+                    Advertiser CPM
+                  </th>
+                  <th className="text-right px-4 py-2 font-medium" title="Creator's actual RPM after YouTube's 45% cut. Long-form only.">
+                    Creator RPM (55%)
+                  </th>
+                  <th className="text-right px-4 py-2 font-medium" title="Creator RPM per 1,000 Shorts views (post-cut). Realistic range: $0.04-$0.15.">
+                    Shorts RPM
+                  </th>
+                  <th className="text-right px-4 py-2 font-medium" title="Risk of AI/reused-content denial (lower = safer).">
+                    Monet. Safety
+                  </th>
                   <th className="text-right px-4 py-2 font-medium">Trend</th>
                   <th className="text-right px-4 py-2 font-medium">Comp.</th>
-                  <th className="text-right px-4 py-2 font-medium">Evergreen</th>
-                  <th className="text-right px-4 py-2 font-medium">Auto Ease</th>
                   <th className="text-right px-4 py-2 font-medium">Score</th>
                 </tr>
               </thead>
@@ -184,31 +192,48 @@ export default function TrendsTab() {
                           {n.bestFor}
                         </div>
                       </td>
+                      {/* Advertiser CPM (what YouTube charges) */}
                       <td className="px-4 py-3 text-right tabular-nums">
-                        <span className="text-emerald-300">
+                        <span className="text-zinc-300">
                           ${n.cpmLow.toFixed(0)}–${n.cpmHigh.toFixed(0)}
                         </span>
                       </td>
+                      {/* Creator RPM (55% of advertiser CPM — what creator actually keeps) */}
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        <span className="text-emerald-300 font-medium">
+                          ${(n.cpmLow * 0.55).toFixed(2)}–
+                          ${(n.cpmHigh * 0.55).toFixed(2)}
+                        </span>
+                      </td>
+                      {/* Shorts RPM (already post-cut in seed data) */}
                       <td className="px-4 py-3 text-right tabular-nums text-xs">
                         ${n.shortsRpm.toFixed(2)}
+                      </td>
+                      {/* Monetization Safety — higher = safer from AI/reused denial */}
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="w-10 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                (n.monetizationSafety ?? 0.7) >= 0.75
+                                  ? "bg-emerald-500"
+                                  : (n.monetizationSafety ?? 0.7) >= 0.6
+                                  ? "bg-amber-500"
+                                  : "bg-red-500"
+                              }`}
+                              style={{ width: `${(n.monetizationSafety ?? 0.7) * 100}%` }}
+                            />
+                          </div>
+                          <span className="text-xs">
+                            {((n.monetizationSafety ?? 0.7) * 100).toFixed(0)}%
+                          </span>
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         <ScoreBar value={n.trendScore} tone="amber" />
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         <ScoreBar value={n.competition} tone="red" inverted />
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        <ScoreBar
-                          value={n.evergreenFactor * 100}
-                          tone="emerald"
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        <ScoreBar
-                          value={n.automationEase * 100}
-                          tone="purple"
-                        />
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="text-lg font-bold text-gradient-warm">

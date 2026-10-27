@@ -1,20 +1,48 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { createClient } from "@libsql/client";
+import { calcCompositeScore } from "@/lib/autotube/projections";
 
-// Initial niches sourced from 2026 trend research
-// (OutlierKit, vidIQ, Fliki, Virvid benchmarks — see worklog.md)
-const NICHES = [
+// Initial niches with REALISTIC 2025-2026 industry benchmarks.
+//
+// All CPM values are ADVERTISER CPM (what YouTube charges advertisers).
+// Creator RPM = ~55% of these values for long-form (YouTube keeps 45%).
+// shortsRpm is the CREATOR RPM (post-cut) per 1,000 Shorts views,
+// capped at $0.04–$0.15 per industry benchmarks.
+//
+// monetizationSafety: 0-1, lower = higher AI/reused-content denial risk.
+// AI-generated niches with templated output face ~30-50% denial risk.
+//
+// Sources: YouTube YPP 2026 eligibility docs, Satura AI RPM benchmarks,
+// OutlierKit, vidIQ, Fliki, Virvid analyses.
+
+interface NicheSeed {
+  name: string;
+  category: string;
+  cpmLow: number; // Advertiser CPM (creator keeps ~55%)
+  cpmHigh: number;
+  shortsRpm: number; // Creator RPM (post-cut, $0.04-$0.15 range)
+  trendScore: number;
+  competition: number;
+  evergreenFactor: number;
+  automationEase: number;
+  monetizationSafety: number;
+  sampleChannels: string;
+  bestFor: string;
+}
+
+const NICHES: NicheSeed[] = [
   {
     name: "Personal Finance & Investing",
     category: "Finance",
     cpmLow: 18,
     cpmHigh: 36,
-    shortsRpm: 0.18,
+    shortsRpm: 0.12, // realistic creator RPM (was 0.18)
     trendScore: 78,
     competition: 72,
     evergreenFactor: 0.85,
     automationEase: 0.55,
+    monetizationSafety: 0.85, // established niche, low AI denial risk
     sampleChannels: "Graham Stephan, Andrei Jikh, MagnatesMoney",
     bestFor: "long-form",
   },
@@ -23,11 +51,12 @@ const NICHES = [
     category: "AI / Tech",
     cpmLow: 10,
     cpmHigh: 22,
-    shortsRpm: 0.12,
+    shortsRpm: 0.10,
     trendScore: 95,
     competition: 48,
     evergreenFactor: 0.45,
     automationEase: 0.9,
+    monetizationSafety: 0.65, // AI content scrutiny higher
     sampleChannels: "Matt Wolfe, AI Explained, The AI Advantage",
     bestFor: "hybrid",
   },
@@ -36,11 +65,12 @@ const NICHES = [
     category: "Business",
     cpmLow: 10,
     cpmHigh: 25,
-    shortsRpm: 0.1,
+    shortsRpm: 0.08,
     trendScore: 82,
     competition: 55,
     evergreenFactor: 0.9,
     automationEase: 0.7,
+    monetizationSafety: 0.85, // original content, well-received
     sampleChannels: "MagnatesMedia, ColdFusion, Company Man",
     bestFor: "long-form",
   },
@@ -49,11 +79,12 @@ const NICHES = [
     category: "Finance",
     cpmLow: 10,
     cpmHigh: 25,
-    shortsRpm: 0.14,
+    shortsRpm: 0.10,
     trendScore: 85,
     competition: 68,
     evergreenFactor: 0.6,
     automationEase: 0.85,
+    monetizationSafety: 0.55, // often flagged as templated/reused
     sampleChannels: "Iman Gadzhi, Ali Abdaal, Make Money Alex",
     bestFor: "hybrid",
   },
@@ -62,11 +93,12 @@ const NICHES = [
     category: "Entertainment",
     cpmLow: 5,
     cpmHigh: 12,
-    shortsRpm: 0.06,
+    shortsRpm: 0.05,
     trendScore: 74,
     competition: 65,
     evergreenFactor: 0.95,
     automationEase: 0.8,
+    monetizationSafety: 0.75,
     sampleChannels: "MrBallen, Bailey Sarian, Explore With Us",
     bestFor: "long-form",
   },
@@ -80,6 +112,7 @@ const NICHES = [
     competition: 50,
     evergreenFactor: 0.98,
     automationEase: 0.8,
+    monetizationSafety: 0.80,
     sampleChannels: "Kings and Generals, History Matters",
     bestFor: "long-form",
   },
@@ -88,11 +121,12 @@ const NICHES = [
     category: "Self-Help",
     cpmLow: 6,
     cpmHigh: 15,
-    shortsRpm: 0.08,
+    shortsRpm: 0.07,
     trendScore: 71,
     competition: 60,
     evergreenFactor: 0.88,
     automationEase: 0.85,
+    monetizationSafety: 0.55, // heavy AI voiceover risk
     sampleChannels: "Motiversity, Menfulness, Diary of a CEO",
     bestFor: "hybrid",
   },
@@ -101,11 +135,12 @@ const NICHES = [
     category: "Health",
     cpmLow: 5,
     cpmHigh: 15,
-    shortsRpm: 0.09,
+    shortsRpm: 0.08,
     trendScore: 66,
     competition: 58,
     evergreenFactor: 0.75,
     automationEase: 0.7,
+    monetizationSafety: 0.60, // medical misinformation scrutiny
     sampleChannels: "What I've Learned, Thomas DeLauer",
     bestFor: "hybrid",
   },
@@ -114,11 +149,12 @@ const NICHES = [
     category: "AI / Tech",
     cpmLow: 8,
     cpmHigh: 20,
-    shortsRpm: 0.11,
+    shortsRpm: 0.09,
     trendScore: 92,
     competition: 40,
     evergreenFactor: 0.4,
     automationEase: 0.95,
+    monetizationSafety: 0.60, // AI tool content flagged more often
     sampleChannels: "Kevin Stratvert, AI Tutorials Hub",
     bestFor: "long-form",
   },
@@ -127,11 +163,12 @@ const NICHES = [
     category: "AI / Tech",
     cpmLow: 8,
     cpmHigh: 18,
-    shortsRpm: 0.1,
+    shortsRpm: 0.08,
     trendScore: 88,
     competition: 52,
     evergreenFactor: 0.35,
     automationEase: 0.95,
+    monetizationSafety: 0.55, // compilations often flagged
     sampleChannels: "ColdFusion, TechAlt, Two Minute Papers",
     bestFor: "hybrid",
   },
@@ -140,11 +177,12 @@ const NICHES = [
     category: "Wellness",
     cpmLow: 4,
     cpmHigh: 10,
-    shortsRpm: 0.04,
+    shortsRpm: 0.04, // realistic floor
     trendScore: 55,
     competition: 70,
     evergreenFactor: 0.99,
     automationEase: 1.0,
+    monetizationSafety: 0.45, // pure AI-generated music high denial risk
     sampleChannels: "YellowBrickCinema, Sleepy Time",
     bestFor: "long-form",
   },
@@ -158,6 +196,7 @@ const NICHES = [
     competition: 75,
     evergreenFactor: 0.65,
     automationEase: 0.85,
+    monetizationSafety: 0.65, // game footage licensed fair use, generally OK
     sampleChannels: "VaatiVidya, TheSpiffingBrit",
     bestFor: "hybrid",
   },
@@ -166,11 +205,12 @@ const NICHES = [
     category: "Kids",
     cpmLow: 3,
     cpmHigh: 8,
-    shortsRpm: 0.03,
+    shortsRpm: 0.04,
     trendScore: 62,
     competition: 80,
     evergreenFactor: 0.95,
     automationEase: 0.6,
+    monetizationSafety: 0.50, // COPPA + AI content scrutiny
     sampleChannels: "Cocomelon, Ms Rachel",
     bestFor: "long-form",
   },
@@ -179,11 +219,12 @@ const NICHES = [
     category: "Finance",
     cpmLow: 12,
     cpmHigh: 28,
-    shortsRpm: 0.15,
+    shortsRpm: 0.10,
     trendScore: 73,
     competition: 47,
     evergreenFactor: 0.7,
     automationEase: 0.65,
+    monetizationSafety: 0.75,
     sampleChannels: "BiggerPockets, Meet Kevin",
     bestFor: "long-form",
   },
@@ -192,40 +233,19 @@ const NICHES = [
     category: "AI / Tech",
     cpmLow: 12,
     cpmHigh: 24,
-    shortsRpm: 0.13,
+    shortsRpm: 0.11,
     trendScore: 90,
     competition: 35,
     evergreenFactor: 0.5,
     automationEase: 0.9,
+    monetizationSafety: 0.70, // screen-recorded, generally OK
     sampleChannels: "Landon Schertz, Toolify, SaaS Pedia",
     bestFor: "hybrid",
   },
 ];
 
-// Weighted composite score
-function calcComposite(n: {
-  trendScore: number;
-  cpmLow: number;
-  cpmHigh: number;
-  competition: number;
-  evergreenFactor: number;
-  automationEase: number;
-}): number {
-  const avgCpm = (n.cpmLow + n.cpmHigh) / 2;
-  const cpmNorm = Math.min(100, (avgCpm / 30) * 100);
-  const competitionScore = (1 - n.competition / 100) * 100;
-  const score =
-    0.3 * n.trendScore +
-    0.25 * cpmNorm +
-    0.2 * competitionScore +
-    0.15 * n.evergreenFactor * 100 +
-    0.1 * n.automationEase * 100;
-  return Math.round(score * 10) / 10;
-}
-
 // Schema SQL — applied if tables don't exist yet (idempotent).
-// This makes /api/seed self-bootstrapping: hit it once on a fresh
-// Turso database and it'll create all 6 tables AND seed the niches.
+// Now includes monetizationSafety column.
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS "Niche" (
   "id" TEXT PRIMARY KEY NOT NULL,
@@ -238,6 +258,7 @@ CREATE TABLE IF NOT EXISTS "Niche" (
   "competition" REAL NOT NULL,
   "evergreenFactor" REAL NOT NULL,
   "automationEase" REAL NOT NULL,
+  "monetizationSafety" REAL NOT NULL DEFAULT 0.7,
   "compositeScore" REAL NOT NULL,
   "sampleChannels" TEXT,
   "bestFor" TEXT,
@@ -245,6 +266,8 @@ CREATE TABLE IF NOT EXISTS "Niche" (
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE("name")
 );
+
+ALTER TABLE "Niche" ADD COLUMN "monetizationSafety" REAL NOT NULL DEFAULT 0.7;
 
 CREATE TABLE IF NOT EXISTS "VideoProject" (
   "id" TEXT PRIMARY KEY NOT NULL,
@@ -316,9 +339,7 @@ CREATE INDEX IF NOT EXISTS "GeneratedAsset_videoId_idx" ON "GeneratedAsset"("vid
 CREATE INDEX IF NOT EXISTS "PublishingSlot_videoId_idx" ON "PublishingSlot"("videoId");
 `;
 
-// Apply the schema directly via libsql client (bypasses Prisma which
-// doesn't support raw DDL on libsql). Idempotent — safe to run on every
-// /api/seed call. CREATE TABLE IF NOT EXISTS skips existing tables.
+// Apply the schema directly via libsql client.
 async function ensureSchema(): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set");
@@ -333,9 +354,12 @@ async function ensureSchema(): Promise<void> {
     try {
       await client.execute(stmt);
     } catch (err) {
-      // "already exists" errors are fine — idempotent re-runs
+      // "already exists" / "duplicate column" errors are fine — idempotent re-runs
       const msg = (err as Error).message ?? "";
-      if (!msg.includes("already exists")) {
+      if (
+        !msg.includes("already exists") &&
+        !msg.includes("duplicate column")
+      ) {
         console.error("Schema statement failed:", stmt.substring(0, 80), msg);
       }
     }
@@ -344,13 +368,11 @@ async function ensureSchema(): Promise<void> {
 
 export async function POST() {
   try {
-    // 1. Ensure all tables exist (idempotent)
     await ensureSchema();
 
-    // 2. Upsert all 15 niches
     let upserted = 0;
     for (const n of NICHES) {
-      const score = calcComposite(n);
+      const score = calcCompositeScore(n);
       await db.niche.upsert({
         where: { name: n.name },
         create: { ...n, compositeScore: score },
@@ -358,7 +380,11 @@ export async function POST() {
       });
       upserted++;
     }
-    return NextResponse.json({ ok: true, count: upserted });
+    return NextResponse.json({
+      ok: true,
+      count: upserted,
+      note: "Niches updated with realistic 2025-2026 benchmarks (creator RPMs, monetization safety scores)",
+    });
   } catch (e) {
     console.error("seed error", e);
     return NextResponse.json(
@@ -370,7 +396,6 @@ export async function POST() {
 
 export async function GET() {
   try {
-    // Also ensure schema on GET (helps /api/niches work after first deploy)
     await ensureSchema();
     const niches = await db.niche.findMany({
       orderBy: { compositeScore: "desc" },

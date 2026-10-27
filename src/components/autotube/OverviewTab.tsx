@@ -21,6 +21,8 @@ import {
   Sparkles,
   Youtube,
   Calendar,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
 import type { DashboardData } from "@/lib/autotube/types";
 import { fmtMoney, STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
@@ -31,11 +33,29 @@ interface Props {
   onOpenMoney: () => void;
 }
 
+interface MoneyData {
+  totals: {
+    totalExpected12mo: number;
+    totalExpected24mo: number;
+    totalBaseCase12moIfMonetized: number;
+  };
+  totalsLegacy: { monthly: number; projected90Day: number; projected1Year: number };
+  riskMetrics: {
+    chanceAllChannelsFail: number;
+    chanceAtLeastOneMonetizes: number;
+    chanceOfMatchingOptimisticCeiling: number;
+    aiContentDenialRiskPerChannel: number;
+    yppByMonth6: number;
+    yppByMonth12: number;
+    neverReachesYpp: number;
+  };
+  first90Days: { expectedRevenue: number; note: string };
+  assumptions: { creatorShareOfCpm: number; yppThreshold: string };
+}
+
 export default function OverviewTab({ onOpenStudio, onOpenTrends, onOpenMoney }: Props) {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [money, setMoney] = useState<{
-    totals: { monthly: number; projected90Day: number; projected1Year: number };
-  } | null>(null);
+  const [money, setMoney] = useState<MoneyData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -63,19 +83,24 @@ export default function OverviewTab({ onOpenStudio, onOpenTrends, onOpenMoney }:
     );
   }
 
+  // Realistic numbers from new monetization model
+  const expected12mo = money?.totals?.totalExpected12mo ?? 0;
+  const expectedMonthly = money?.totalsLegacy?.monthly ?? 0;
+  const first90 = money?.first90Days?.expectedRevenue ?? 0;
+
   const kpis = [
     {
-      label: "Projected Monthly",
-      value: money ? fmtMoney(money.totals.monthly) : "—",
+      label: "Modeled Expected Monthly",
+      value: fmtMoney(expectedMonthly),
       icon: DollarSign,
-      hint: "Across all tracked niches",
+      hint: "Probability-weighted · month 12 · all niches",
       tone: "warm",
     },
     {
-      label: "Projected 1 Year",
-      value: money ? fmtMoney(money.totals.projected1Year) : "—",
+      label: "Expected 1 Year",
+      value: fmtMoney(expected12mo),
       icon: TrendingUp,
-      hint: "Same cadence, full year",
+      hint: "Across all scenarios + YPP outcomes",
       tone: "emerald",
     },
     {
@@ -89,7 +114,7 @@ export default function OverviewTab({ onOpenStudio, onOpenTrends, onOpenMoney }:
       label: "Tracked Niches",
       value: String(data.counts.niches),
       icon: Target,
-      hint: "Auto-scored by trend × CPM × ease",
+      hint: "Scored by trend × Creator RPM × monetization safety",
       tone: "amber",
     },
   ];
@@ -107,6 +132,9 @@ export default function OverviewTab({ onOpenStudio, onOpenTrends, onOpenMoney }:
     purple: "bg-fuchsia-500/20 text-fuchsia-300",
     amber: "bg-amber-500/20 text-amber-300",
   };
+
+  // Risk panel helper
+  const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
   return (
     <div className="space-y-8">
@@ -375,29 +403,93 @@ export default function OverviewTab({ onOpenStudio, onOpenTrends, onOpenMoney }:
         </Card>
       </div>
 
-      {/* Revenue deep-link */}
-      <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-950/40 to-zinc-950">
-        <CardContent className="p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h3 className="text-lg font-semibold">
-              {money
-                ? `${fmtMoney(money.totals.projected90Day)} projected in next 90 days`
-                : "Load monetization data…"}
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              Assumptions: 2 long-form videos + 5 Shorts per week, ramping
-              view counts. See Money Tracker for per-niche breakdown.
-            </p>
+      {/* Revenue deep-link + Risk panel */}
+      <Card className="border-amber-500/20 bg-gradient-to-br from-amber-950/30 via-zinc-950 to-black">
+        <CardContent className="p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Info className="size-4 text-amber-400" />
+                First 90 days: {fmtMoney(first90)} expected revenue
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                First 90 days typically produce $0 revenue. YPP eligibility
+                requires 8,000 watch hours in 365 days OR 20M Shorts views in
+                90 days. After 12 months of consistent posting, expected total
+                across all niches: <strong className="text-amber-300">{fmtMoney(expected12mo)}</strong>.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              className="border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+              onClick={onOpenMoney}
+            >
+              Open Money Tracker →
+            </Button>
           </div>
-          <Button
-            variant="outline"
-            className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10"
-            onClick={onOpenMoney}
-          >
-            Open Money Tracker →
-          </Button>
+
+          {/* Risk panel — key probabilities */}
+          {money?.riskMetrics && (
+            <div className="border-t border-zinc-800/60 pt-4">
+              <h4 className="text-xs uppercase tracking-wider text-muted-foreground mb-3 flex items-center gap-1">
+                <AlertTriangle className="size-3 text-red-400" />
+                Risk panel — faceless AI-content channels
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <RiskStat
+                  label="Chance ≥1 channel monetizes (12mo)"
+                  value={pct(money.riskMetrics.chanceAtLeastOneMonetizes)}
+                  tone="emerald"
+                />
+                <RiskStat
+                  label="Chance all channels fail (12mo)"
+                  value={pct(money.riskMetrics.chanceAllChannelsFail)}
+                  tone="red"
+                />
+                <RiskStat
+                  label="AI-content denial risk per channel"
+                  value={pct(money.riskMetrics.aiContentDenialRiskPerChannel)}
+                  tone="red"
+                />
+                <RiskStat
+                  label="YPP reached by month 12"
+                  value={pct(money.riskMetrics.yppByMonth12)}
+                  tone="amber"
+                />
+              </div>
+              <p className="text-[10px] text-muted-foreground/70 mt-3 italic border-l-2 border-amber-500/30 pl-3">
+                Figures are probability-weighted expected values, not guarantees.
+                Based on 2025-2026 YouTube creator benchmarks. Individual results
+                vary widely; ~40% of new channels never monetize.
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function RiskStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "red" | "amber" | "emerald";
+}) {
+  const valueColor: Record<string, string> = {
+    red: "text-red-300",
+    amber: "text-amber-300",
+    emerald: "text-emerald-300",
+  };
+  return (
+    <div className="p-2 rounded-md bg-zinc-900/60 border border-zinc-800">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className={`text-sm font-bold tabular-nums mt-1 ${valueColor[tone]}`}>
+        {value}
+      </div>
     </div>
   );
 }

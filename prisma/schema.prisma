@@ -14,23 +14,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// A tracked niche with trend + monetization metrics
+// A tracked niche with trend + monetization metrics.
+// NOTE: cpmLow/cpmHigh are ADVERTISER CPMs — YouTube keeps ~45%,
+// creator RPM is ~55% of these values (computed at display time).
 model Niche {
-  id              String   @id @default(cuid())
-  name            String   @unique
-  category        String   // e.g. "Finance", "AI", "Education"
-  cpmLow          Float    // USD per 1k views (long-form)
-  cpmHigh         Float
-  shortsRpm       Float    // USD per 1k Shorts views
-  trendScore      Float    // 0-100, momentum vs 90d baseline
-  competition     Float    // 0-100, higher = more crowded
-  evergreenFactor Float    // 0-1, content shelf life multiplier
-  automationEase  Float    // 0-1, how feasible to produce faceless
-  compositeScore  Float    // weighted score 0-100 (calculated)
-  sampleChannels  String?  // comma-separated reference channels
-  bestFor         String?  // "long-form" | "shorts" | "hybrid"
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                   String   @id @default(cuid())
+  name                 String   @unique
+  category             String   // e.g. "Finance", "AI", "Education"
+  cpmLow               Float    // Advertiser CPM low end (creator keeps ~55%)
+  cpmHigh              Float    // Advertiser CPM high end
+  shortsRpm            Float    // Creator RPM per 1k Shorts views (post-cut)
+  trendScore           Float    // 0-100, momentum vs 90d baseline
+  competition          Float    // 0-100, higher = more crowded
+  evergreenFactor      Float    // 0-1, content shelf life multiplier
+  automationEase       Float    // 0-1, how feasible to produce faceless
+  monetizationSafety   Float    @default(0.7) // 0-1, lower = higher AI/reused-content denial risk
+  compositeScore       Float    // weighted score 0-100 (calculated, includes monetization_safety)
+  sampleChannels       String?  // comma-separated reference channels
+  bestFor              String?  // "long-form" | "shorts" | "hybrid"
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
   videos VideoProject[]
 }
