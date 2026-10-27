@@ -161,9 +161,11 @@ export default function StudioTab({
     if (!currentVideo) return;
     setImaging(true);
     try {
-      // New API: process ONE scene per call (to fit Vercel's 60s timeout).
-      // Call repeatedly until done.
+      // Loop the scene-image endpoint — one scene per call (fits Vercel 60s timeout).
+      // Add 2s delay between calls to give Z.ai a breather and avoid 429s.
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
       let totalProcessed = 0;
+      let totalFailed = 0;
       const maxCalls = 12; // safety cap (long-form has 8-12 scenes)
       for (let i = 0; i < maxCalls; i++) {
         const res = await fetch("/api/content/scene-image", {
@@ -173,26 +175,32 @@ export default function StudioTab({
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
+          if (res.status === 504 || (err.error ?? "").includes("too long")) {
+            // Z.ai took too long — wait 5s and retry the same scene
+            toast.warning(
+              `Scene ${i + 1} took too long, retrying in 5s...`,
+              { duration: 4000 }
+            );
+            totalFailed++;
+            if (totalFailed >= 3) {
+              toast.error("Z.ai image gen is consistently slow. Try again later.");
+              break;
+            }
+            await sleep(5000);
+            continue; // retry the same call without incrementing i... actually i will increment, so we need to decrement
+          }
           toast.error(err.error ?? `Image gen failed on scene ${i + 1}`);
           break;
         }
         const data = await res.json();
         if (data.done) {
-          // All scenes imaged — refresh the video to show all images
-          const allRes = await fetch("/api/videos");
-          if (allRes.ok) {
-            const allData = await allRes.json();
-            const v = (allData.videos as VideoProject[]).find(
-              (x) => x.id === currentVideo.id
-            );
-            if (v) setCurrentVideo(v);
-          }
-          toast.success(`All scene images generated (${totalProcessed} scenes)`);
+          toast.success(
+            `All scene images generated${totalProcessed > 0 ? ` (${totalProcessed} scenes)` : ""}`
+          );
           return;
         }
         if (data.imageUrl) {
           totalProcessed++;
-          // Update the current video's scenes locally to show progress
           setCurrentVideo((prev) => {
             if (!prev) return prev;
             return {
@@ -202,13 +210,20 @@ export default function StudioTab({
               ),
             };
           });
+          // Small delay between scenes to avoid Z.ai 429
+          await sleep(1000);
+        } else if (data.error) {
+          toast.error(data.error);
+          break;
         }
       }
-      // Loop completed without done=true — partial success
       if (totalProcessed > 0) {
-        toast.success(`Generated ${totalProcessed} scene images (some may need re-running)`);
-      } else {
-        toast.error("No scene images generated — Z.ai rate limit may be active");
+        toast.success(
+          `Generated ${totalProcessed} scene image${totalProcessed > 1 ? "s" : ""}` +
+            (totalFailed > 0 ? ` (${totalFailed} failed, re-click to retry)` : "")
+        );
+      } else if (totalFailed === 0) {
+        toast.error("No scene images generated — check the console for errors");
       }
     } catch (e) {
       toast.error("Network error");

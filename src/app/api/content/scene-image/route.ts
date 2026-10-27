@@ -67,7 +67,8 @@ export async function POST(req: Request) {
 
     // Retry with exponential backoff for Z.ai 429 rate limits.
     // Reduced from 3 retries to 2 to stay safely under Vercel's 60s timeout.
-    // Worst case: 10s image gen + 2s + 10s retry + 4s + 10s retry = 36s.
+    // Also add 45s AbortController per fetch call — if Z.ai is slow, we fail
+    // cleanly with a clear error instead of Vercel's FUNCTION_INVOCATION_TIMEOUT.
     let imageUrl: string | null = null;
     let lastError: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -75,6 +76,10 @@ export async function POST(req: Request) {
         await new Promise((r) => setTimeout(r, 2000)); // 2s backoff
       }
       try {
+        // Abort if Z.ai takes >45s — return a clean error rather than
+        // letting Vercel's 60s function timeout kill us.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
         const resp = await fetch(`${baseUrl}/images/generations`, {
           method: "POST",
           headers: {
@@ -86,9 +91,11 @@ export async function POST(req: Request) {
             model: "glm-image",
             prompt: fullPrompt,
             size,
-            quality: "standard", // 5-10s vs 20s for hd
+            quality: "standard", // 5-10s vs 20s for hd (but Z.ai often takes 30-40s actual)
           }),
+          signal: controller.signal,
         });
+        clearTimeout(timeoutId);
         if (!resp.ok) {
           const errBody = await resp.text();
           lastError = `HTTP ${resp.status}: ${errBody.substring(0, 200)}`;
@@ -101,7 +108,18 @@ export async function POST(req: Request) {
         lastError = result.error?.message ?? "No URL in response";
         break;
       } catch (err) {
-        lastError = (err as Error).message;
+        const errMsg = (err as Error).message;
+        if (errMsg.includes("aborted") || errMsg.includes("timeout")) {
+          // Z.ai was too slow — return clean error, client will retry on next click
+          return NextResponse.json(
+            {
+              error:
+                "Z.ai image generation took too long (>45s). Click 'Generate Scene Images' again to retry — the same scene will be retried.",
+            },
+            { status: 504 }
+          );
+        }
+        lastError = errMsg;
       }
     }
 
