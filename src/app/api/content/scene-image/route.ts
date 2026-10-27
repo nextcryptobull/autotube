@@ -7,20 +7,25 @@ export const maxDuration = 60;
 // Cloudflare Workers AI — free tier, fast image generation (3-10s per image)
 //
 // Free tier: 10,000 Neurons/day (~50-100 image generations)
-// Models:
-//   - @cf/blackforestlabs/flux-1-schnell (fastest, 3-5s, good quality)
-//   - @cf/stability/stable-diffusion-xl-base-1.0 (better quality, 8-12s)
-//   - @cf/stability/stable-diffusion-512-v2-1 (older, 4-6s)
+// Models (verify at https://developers.cloudflare.com/workers-ai/models/):
+//   - @cf/stability/stable-diffusion-xl-base-1.0 (widely available, 8-12s)
+//   - @cf/stability/stable-diffusion-v1-5-inpainting
+//   - @cf/blackforestlabs/flux-1-schnell (faster, 3-5s — may not be available in all accounts)
+//   - @cf/lyssbio/deviantart-image-mix-1.2
 //
 // API: POST https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{model}
+// The model identifier with @cf/ prefix must be URL-encoded because it contains
+// special characters. Cloudflare's router is strict about the path format.
 // Headers: Authorization: Bearer {API_TOKEN}
 // Body: { "prompt": "..." }
-// Response: image/jpeg binary (NOT JSON)
+// Response: image binary directly (content-type: image/png or image/jpeg)
 //
 // We convert to base64 data URL and store in Scene.imageUrl.
-// Free, no rate limits worth mentioning, ~5s per image typically.
 
-const CF_MODEL = "@cf/blackforestlabs/flux-1-schnell";
+// Use SDXL base 1.0 — the most widely-available model on Cloudflare Workers AI.
+// Switch to @cf/blackforestlabs/flux-1-schnell for faster generation if your
+// account has access (some accounts don't).
+const CF_MODEL = "@cf/stability/stable-diffusion-xl-base-1.0";
 
 interface CFErrorResponse {
   success: boolean;
@@ -85,18 +90,21 @@ export async function POST(req: Request) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45000);
 
-        const resp = await fetch(
-          `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${CF_MODEL}`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${apiToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ prompt: fullPrompt }),
-            signal: controller.signal,
-          }
-        );
+        // URL-encode the model name (Cloudflare's router is strict about
+        // special chars like @ and / in the path). Some routers reject
+        // literal @cf/... in the URL.
+        const encodedModel = encodeURIComponent(CF_MODEL);
+        const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${encodedModel}`;
+
+        const resp = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ prompt: fullPrompt }),
+          signal: controller.signal,
+        });
         clearTimeout(timeoutId);
 
         if (!resp.ok) {
