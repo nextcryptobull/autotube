@@ -162,45 +162,54 @@ export default function StudioTab({
     setImaging(true);
     try {
       // Loop the scene-image endpoint — one scene per call (fits Vercel 60s timeout).
-      // Add 2s delay between calls to give Z.ai a breather and avoid 429s.
+      // Retry on ANY error (504 timeout, 502 Pollinations flake) up to 5 times total
+      // before giving up. The route finds the first UNIMAGED scene, so retrying
+      // the same call retries the same scene.
       const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
       let totalProcessed = 0;
       let totalFailed = 0;
-      const maxCalls = 12; // safety cap (long-form has 8-12 scenes)
-      for (let i = 0; i < maxCalls; i++) {
+      const maxAttempts = 15; // safety cap — long-form has 8-12 scenes
+      const maxConsecutiveFailures = 5;
+
+      for (let i = 0; i < maxAttempts; i++) {
         const res = await fetch("/api/content/scene-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ videoId: currentVideo.id }),
         });
+
         if (!res.ok) {
+          // Any error (502 Pollinations, 504 timeout, 500 server) → retry
           const err = await res.json().catch(() => ({}));
-          if (res.status === 504 || (err.error ?? "").includes("too long")) {
-            // Z.ai took too long — wait 5s and retry the same scene
-            toast.warning(
-              `Scene ${i + 1} took too long, retrying in 5s...`,
-              { duration: 4000 }
+          const errMsg = err.error ?? `HTTP ${res.status}`;
+          totalFailed++;
+          if (totalFailed >= maxConsecutiveFailures) {
+            toast.error(
+              `Scene image generation failed ${totalFailed} times in a row. Stopping. Re-click the button to retry from where we left off.`,
+              { duration: 6000 }
             );
-            totalFailed++;
-            if (totalFailed >= 3) {
-              toast.error("Z.ai image gen is consistently slow. Try again later.");
-              break;
-            }
-            await sleep(5000);
-            continue; // retry the same call without incrementing i... actually i will increment, so we need to decrement
+            break;
           }
-          toast.error(err.error ?? `Image gen failed on scene ${i + 1}`);
-          break;
+          toast.warning(
+            `Attempt ${i + 1}: ${errMsg.substring(0, 80)}. Retrying in 3s...`,
+            { duration: 3000 }
+          );
+          await sleep(3000);
+          continue; // retry — route will find same unimaged scene
         }
+
         const data = await res.json();
         if (data.done) {
           toast.success(
-            `All scene images generated${totalProcessed > 0 ? ` (${totalProcessed} scenes)` : ""}`
+            `All scene images generated!` +
+              (totalProcessed > 0 ? ` (${totalProcessed} scenes this run)` : "")
           );
           return;
         }
         if (data.imageUrl) {
           totalProcessed++;
+          totalFailed = 0; // reset failure counter on success
+          // Update the current video's scenes locally to show progress
           setCurrentVideo((prev) => {
             if (!prev) return prev;
             return {
@@ -210,20 +219,23 @@ export default function StudioTab({
               ),
             };
           });
-          // Small delay between scenes to avoid Z.ai 429
-          await sleep(1000);
-        } else if (data.error) {
-          toast.error(data.error);
-          break;
+          // Small delay between scenes to avoid Pollinations 429
+          await sleep(500);
         }
       }
+
+      // Loop completed without done=true
       if (totalProcessed > 0) {
         toast.success(
           `Generated ${totalProcessed} scene image${totalProcessed > 1 ? "s" : ""}` +
-            (totalFailed > 0 ? ` (${totalFailed} failed, re-click to retry)` : "")
+            (totalFailed > 0
+              ? ` (${totalFailed} retries needed — re-click to continue)`
+              : "")
         );
-      } else if (totalFailed === 0) {
-        toast.error("No scene images generated — check the console for errors");
+      } else {
+        toast.error(
+          "No scene images generated — Pollinations may be down. Try again in a minute."
+        );
       }
     } catch (e) {
       toast.error("Network error");
