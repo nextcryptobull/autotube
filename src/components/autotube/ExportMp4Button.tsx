@@ -40,6 +40,11 @@ function getExt(url: string): string {
 // We use esm.sh which serves ESM versions of any npm package, browser-ready.
 // The `new Function('import(...)')` trick prevents Turbopack from trying
 // to statically analyze and bundle the remote URL at build time.
+//
+// CRITICAL: We must pass `classWorkerURL` as a BLOB URL (using toBlobURL).
+// Browsers block Worker construction from cross-origin URLs (SecurityError).
+// toBlobURL fetches the script, stores it in a blob: URL which IS same-origin,
+// so Worker construction succeeds.
 let ffmpegLoaderPromise: Promise<any> | null = null;
 
 async function loadFFmpegWasm(): Promise<any> {
@@ -69,10 +74,23 @@ async function loadFFmpegWasm(): Promise<any> {
 
     const ffmpeg = new FFmpeg();
 
+    // CRITICAL: Convert the cross-origin worker URL to a same-origin blob URL.
+    // Without this, browsers throw SecurityError on Worker construction:
+    //   "Failed to construct 'Worker': Script at 'https://esm.sh/...' cannot
+    //    be accessed from origin 'https://autotubestudio-gamma.vercel.app'"
+    //
+    // toBlobURL fetches the worker script, creates a blob: URL (which is
+    // same-origin), and returns it. Worker construction succeeds.
+    const workerBlobURL = await toBlobURL(
+      "https://esm.sh/@ffmpeg/ffmpeg@0.12.10/es2022/worker.js",
+      "text/javascript"
+    );
+
     // Load the core (single-threaded — works without SharedArrayBuffer,
     // but we still set COOP/COEP headers in next.config.ts as safety)
     const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
     await ffmpeg.load({
+      classWorkerURL: workerBlobURL,
       coreURL: await toBlobURL(
         `${baseURL}/ffmpeg-core.js`,
         "text/javascript"
