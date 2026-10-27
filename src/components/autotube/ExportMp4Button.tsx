@@ -35,72 +35,44 @@ function getExt(url: string): string {
   return "bin";
 }
 
-// Lazy-load ffmpeg.wasm from CDN via dynamic ESM imports (avoids
-// Turbopack's "new Worker(new URL(...))" build error).
-// We use esm.sh which serves ESM versions of any npm package, browser-ready.
-// The `new Function('import(...)')` trick prevents Turbopack from trying
-// to statically analyze and bundle the remote URL at build time.
+// ffmpeg.wasm 0.11.x — uses createFFmpeg + ffmpeg.run() API (no Worker,
+// runs on main thread). Slower than 0.12.x but doesn't have cross-origin
+// Worker issues that caused the 0.12.x version to hang forever at 0%.
 //
-// CRITICAL: We must pass `classWorkerURL` as a BLOB URL (using toBlobURL).
-// Browsers block Worker construction from cross-origin URLs (SecurityError).
-// toBlobURL fetches the script, stores it in a blob: URL which IS same-origin,
-// so Worker construction succeeds.
+// Loaded from CDN as a script tag. Exposes window.FFmpeg with createFFmpeg().
 let ffmpegLoaderPromise: Promise<any> | null = null;
 
 async function loadFFmpegWasm(): Promise<any> {
   if (ffmpegLoaderPromise) return ffmpegLoaderPromise;
 
   ffmpegLoaderPromise = (async () => {
-    // Use Function constructor to bypass Turbopack's static analysis
-    // of dynamic imports. This is safe — we control the URLs.
-    const remoteImport = new Function(
-      "url",
-      "return import(url)"
-    ) as (url: string) => Promise<any>;
+    // Load ffmpeg 0.11.x UMD bundle from unpkg
+    const scriptUrl = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.13/dist/ffmpeg.min.js";
 
-    // Load @ffmpeg/ffmpeg (the FFmpeg class) and @ffmpeg/util (toBlobURL helper)
-    const ffmpegMod = await remoteImport(
-      "https://esm.sh/@ffmpeg/ffmpeg@0.12.10"
-    );
-    const utilMod = await remoteImport(
-      "https://esm.sh/@ffmpeg/util@0.12.2"
-    );
-
-    const { FFmpeg } = ffmpegMod;
-    const { toBlobURL } = utilMod;
-    if (!FFmpeg || !toBlobURL) {
-      throw new Error("Failed to load ffmpeg modules from esm.sh");
+    // Wait for script to load if not already loaded
+    if (!(window as any).FFmpeg) {
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = scriptUrl;
+        script.onload = () => resolve();
+        script.onerror = () =>
+          reject(new Error("Failed to load ffmpeg.wasm 0.11.13 from CDN"));
+        document.head.appendChild(script);
+      });
     }
 
-    const ffmpeg = new FFmpeg();
+    const FFmpegLib = (window as any).FFmpeg;
+    if (!FFmpegLib?.createFFmpeg) {
+      throw new Error("FFmpeg.createFFmpeg not found after script load");
+    }
 
-    // CRITICAL: Convert the cross-origin worker URL to a same-origin blob URL.
-    // Without this, browsers throw SecurityError on Worker construction:
-    //   "Failed to construct 'Worker': Script at 'https://esm.sh/...' cannot
-    //    be accessed from origin 'https://autotubestudio-gamma.vercel.app'"
-    //
-    // toBlobURL fetches the worker script, creates a blob: URL (which is
-    // same-origin), and returns it. Worker construction succeeds.
-    const workerBlobURL = await toBlobURL(
-      "https://esm.sh/@ffmpeg/ffmpeg@0.12.10/es2022/worker.js",
-      "text/javascript"
-    );
-
-    // Load the core (single-threaded — works without SharedArrayBuffer,
-    // but we still set COOP/COEP headers in next.config.ts as safety)
-    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
-    await ffmpeg.load({
-      classWorkerURL: workerBlobURL,
-      coreURL: await toBlobURL(
-        `${baseURL}/ffmpeg-core.js`,
-        "text/javascript"
-      ),
-      wasmURL: await toBlobURL(
-        `${baseURL}/ffmpeg-core.wasm`,
-        "application/wasm"
-      ),
+    const ffmpeg = FFmpegLib.createFFmpeg({
+      log: true,
+      corePath: "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+      // No Worker — runs on main thread (slower but no cross-origin issues)
     });
 
+    await ffmpeg.load();
     return ffmpeg;
   })();
 
@@ -110,10 +82,10 @@ async function loadFFmpegWasm(): Promise<any> {
 export default function ExportMp4Button({ scenes, videoTitle }: Props) {
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [status, setStatus] = useState("");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
   const handleExport = async () => {
-    // Validate we have all required assets
     const scenesWithAssets = scenes.filter((s) => s.imageUrl && s.audioUrl);
     if (scenesWithAssets.length === 0) {
       toast.error(
@@ -130,18 +102,15 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
     setExporting(true);
     setProgress(0);
     setDownloadUrl(null);
+    setStatus("Loading ffmpeg.wasm (~25MB, cached after first use)...");
 
     try {
-      // Load ffmpeg.wasm from CDN (cached after first use)
-      toast.info("Loading ffmpeg.wasm (~30MB, cached after first use)...");
       const ffmpeg = await loadFFmpegWasm();
-      ffmpeg.on("progress", ({ progress: p }: { progress: number }) => {
-        setProgress(Math.round(p * 100));
-      });
       toast.success("ffmpeg.wasm loaded");
+      setStatus(`Fetching ${scenesWithAssets.length} scene assets...`);
+      setProgress(5);
 
       // Step 1: Fetch all images and audio, write to ffmpeg FS
-      setProgress(5);
       for (let i = 0; i < scenesWithAssets.length; i++) {
         const scene = scenesWithAssets[i];
         const imgExt = getExt(scene.imageUrl!);
@@ -149,7 +118,7 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
 
         try {
           const imgBytes = await fetchAsBytes(scene.imageUrl!);
-          await ffmpeg.writeFile(`scene-${i}.${imgExt}`, imgBytes);
+          ffmpeg.FS("writeFile", `scene-${i}.${imgExt}`, imgBytes);
         } catch (err) {
           toast.error(`Failed to fetch image for scene ${i + 1}`);
           throw err;
@@ -157,23 +126,28 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
 
         try {
           const audBytes = await fetchAsBytes(scene.audioUrl!);
-          await ffmpeg.writeFile(`scene-${i}.${audExt}`, audBytes);
+          ffmpeg.FS("writeFile", `scene-${i}.${audExt}`, audBytes);
         } catch (err) {
           toast.error(`Failed to fetch audio for scene ${i + 1}`);
           throw err;
         }
 
-        setProgress(5 + Math.round(((i + 1) / scenesWithAssets.length) * 30));
+        setProgress(5 + Math.round(((i + 1) / scenesWithAssets.length) * 25));
       }
 
       // Step 2: For each scene, generate a clip (image as still video + audio)
-      toast.info("Rendering scene clips...");
+      setStatus("Rendering scene clips (this takes ~5-10s per scene)...");
       for (let i = 0; i < scenesWithAssets.length; i++) {
         const scene = scenesWithAssets[i];
         const imgExt = getExt(scene.imageUrl!);
         const audExt = getExt(scene.audioUrl!);
 
-        await ffmpeg.exec([
+        // ffmpeg 0.11 uses ffmpeg.run() instead of ffmpeg.exec()
+        // Command: -loop 1 -i image.png -i audio.mp3
+        //   -c:v libx264 -tune stillimage -c:a aac -b:a 192k
+        //   -pix_fmt yuv420p -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+        //   -shortest -r 30 clip-i.mp4
+        await ffmpeg.run(
           "-loop",
           "1",
           "-i",
@@ -195,25 +169,28 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
           "-shortest",
           "-r",
           "30",
-          `clip-${i}.mp4`,
-        ]);
+          `clip-${i}.mp4`
+        );
 
         setProgress(
-          35 + Math.round(((i + 1) / scenesWithAssets.length) * 50)
+          30 + Math.round(((i + 1) / scenesWithAssets.length) * 50)
         );
+        setStatus(`Rendered clip ${i + 1}/${scenesWithAssets.length}`);
       }
 
       // Step 3: Concatenate all clips
-      toast.info("Concatenating clips...");
+      setStatus("Concatenating clips into final MP4...");
+      setProgress(85);
       const listContent = scenesWithAssets
         .map((_, i) => `file 'clip-${i}.mp4'`)
         .join("\n");
-      await ffmpeg.writeFile(
+      ffmpeg.FS(
+        "writeFile",
         "list.txt",
         new TextEncoder().encode(listContent)
       );
 
-      await ffmpeg.exec([
+      await ffmpeg.run(
         "-f",
         "concat",
         "-safe",
@@ -222,18 +199,19 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
         "list.txt",
         "-c",
         "copy",
-        "output.mp4",
-      ]);
+        "output.mp4"
+      );
 
       setProgress(95);
 
       // Step 4: Read output and create download URL
-      const data = await ffmpeg.readFile("output.mp4");
-      const blob = new Blob([data], { type: "video/mp4" });
+      const data = ffmpeg.FS("readFile", "output.mp4");
+      const blob = new Blob([data.buffer], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
 
       setProgress(100);
+      setStatus("Done!");
       toast.success("MP4 export complete!", {
         description: `${(blob.size / 1024 / 1024).toFixed(1)} MB · ${scenesWithAssets.length} scenes`,
       });
@@ -249,18 +227,20 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
     } catch (err) {
       console.error("MP4 export failed", err);
       const msg = (err as Error).message ?? "Unknown error";
-      if (msg.includes("SharedArrayBuffer") || msg.includes("COEP")) {
+      if (msg.includes("Failed to fetch")) {
         toast.error(
-          "ffmpeg.wasm needs COOP/COEP headers. Refresh the page and try again — headers are configured in next.config.ts.",
+          "Network error loading ffmpeg.wasm. Check your connection and try again.",
           { duration: 8000 }
         );
-      } else if (msg.includes("Failed to fetch")) {
+      } else if (msg.includes("CORS") || msg.includes("cross-origin")) {
         toast.error(
-          "Network error fetching assets. Check your connection and try again.",
+          "CORS error fetching assets. The image URLs may not allow cross-origin fetch.",
           { duration: 8000 }
         );
       } else {
-        toast.error(`MP4 export failed: ${msg}`, { duration: 8000 });
+        toast.error(`MP4 export failed: ${msg.substring(0, 100)}`, {
+          duration: 8000,
+        });
       }
     } finally {
       setExporting(false);
@@ -288,6 +268,12 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
         )}
       </Button>
 
+      {exporting && status && (
+        <div className="p-2 rounded-md bg-zinc-900/60 border border-zinc-800 text-xs text-muted-foreground">
+          {status}
+        </div>
+      )}
+
       {downloadUrl && !exporting && (
         <div className="p-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-xs">
           <div className="flex items-center gap-2 mb-1">
@@ -309,8 +295,9 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
       <p className="text-[10px] text-muted-foreground flex items-start gap-1">
         <AlertCircle className="size-3 flex-shrink-0 mt-0.5" />
         <span>
-          ~30MB ffmpeg.wasm download (cached after first use). Browser-based,
-          no server. May take 1-2 minutes for 8-12 scene videos.
+          ~25MB ffmpeg.wasm download (cached after first use). Browser-based,
+          no server. Runs on main thread — UI freezes during render.
+          Expected: 1-2 min for 4-8 scene videos.
         </span>
       </p>
     </div>
