@@ -47,7 +47,7 @@ async function loadFFmpegWasm(): Promise<any> {
 
   ffmpegLoaderPromise = (async () => {
     // Load ffmpeg 0.11.x UMD bundle from unpkg
-    const scriptUrl = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.13/dist/ffmpeg.min.js";
+    const scriptUrl = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
 
     // Wait for script to load if not already loaded
     if (!(window as any).FFmpeg) {
