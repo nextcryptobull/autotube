@@ -60,120 +60,133 @@ export async function POST(req: Request) {
 
     // Use 1280x720 (16:9, YouTube-ready aspect ratio)
     // Seed makes the result reproducible for the same prompt
+    // referrer parameter identifies our app to Pollinations — they grant
+    // higher rate limits to apps with referrers.
     const seed = Math.floor(Math.random() * 1000000);
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
       fullPrompt
-    )}?width=1280&height=720&nologo=true&seed=${seed}`;
+    )}?width=1280&height=720&nologo=true&seed=${seed}&referrer=autotube-studio.vercel.app`;
 
-    // Retry with 45s abort timeout per call
-    let imageBytes: Uint8Array | null = null;
-    let lastError: string | null = null;
+    // Fallback: Picsum.photos returns random high-quality stock photos.
+    // No rate limits, always works, supports seed for unique images per scene.
+    // Doesn't match the prompt (random photos), but better than no image.
+    const fallbackUrl = `https://picsum.photos/seed/scene-${nextScene.order}-${seed}/1280/720`;
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
+    // Helper: try a URL with redirect-following (Picsum returns 302)
+    async function tryFetch(url: string): Promise<Uint8Array | null> {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-        const resp = await fetch(imageUrl, {
+        // fetch follows redirects by default
+        const resp = await fetch(url, {
           signal: controller.signal,
+          redirect: "follow",
           headers: {
-            // Some image CDNs require a user agent
             "User-Agent":
               "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             Accept: "image/jpeg,image/png,*/*",
           },
         });
         clearTimeout(timeoutId);
-
         if (!resp.ok) {
-          const errBody = await resp.text();
-          lastError = `HTTP ${resp.status}: ${errBody.substring(0, 200)}`;
-          if (resp.status === 429 || resp.status >= 500) continue;
-          break;
+          console.log(`Fetch failed: ${url.substring(0, 60)} → HTTP ${resp.status}`);
+          return null;
         }
-
         const ab = await resp.arrayBuffer();
-        imageBytes = new Uint8Array(ab);
-
-        if (imageBytes.length === 0) {
-          lastError = "Empty response from Pollinations";
-          continue;
-        }
-
-        // Convert to base64 data URL
-        const contentType = resp.headers.get("content-type") ?? "image/jpeg";
-        const fmt = contentType.includes("png") ? "png" : "jpeg";
-        const b64 = Buffer.from(imageBytes).toString("base64");
-        const dataUrl = `data:image/${fmt};base64,${b64}`;
-
-        await db.scene.update({
-          where: { id: nextScene.id },
-          data: { imageUrl: dataUrl },
-        });
-        await db.generatedAsset.create({
-          data: {
-            videoId,
-            type: "scene-image",
-            url: dataUrl,
-            metaJson: JSON.stringify({
-              sceneOrder: nextScene.order,
-              provider: "pollinations",
-              model: "flux (community-funded)",
-              storage: "data-url",
-              size: "1280x720",
-              seed,
-            }),
-          },
-        });
-
-        const remainingScenes = video.scenes.filter(
-          (s) => s.order > nextScene.order && !s.imageUrl
-        ).length;
-
-        if (nextScene.order === video.scenes[video.scenes.length - 1].order) {
-          await db.videoProject.update({
-            where: { id: videoId },
-            data: { status: "imaged" },
-          });
-        }
-
-        return NextResponse.json({
-          ok: true,
-          done: remainingScenes === 0,
-          sceneId: nextScene.id,
-          sceneOrder: nextScene.order,
-          imageUrl: dataUrl,
-          scenesRemaining: remainingScenes,
-          provider: "pollinations",
-        });
+        const bytes = new Uint8Array(ab);
+        if (bytes.length === 0) return null;
+        return bytes;
       } catch (err) {
-        const errMsg = (err as Error).message;
-        if (errMsg.includes("aborted") || errMsg.includes("timeout")) {
-          return NextResponse.json(
-            {
-              error:
-                "Pollinations took too long (>45s). Click Generate Scene Images again to retry.",
-            },
-            { status: 504 }
-          );
+        const msg = (err as Error).message;
+        if (msg.includes("aborted") || msg.includes("timeout")) {
+          console.log(`Fetch timeout: ${url.substring(0, 60)}`);
         }
-        lastError = errMsg;
+        return null;
       }
     }
 
-    return NextResponse.json(
-      {
-        ok: false,
-        sceneId: nextScene.id,
-        sceneOrder: nextScene.order,
-        error:
-          lastError ?? "Pollinations failed to generate image. Try again.",
+    // Try Pollinations first (AI-generated, matches prompt exactly).
+    // If rate-limited (402) or fails, fall back to Picsum (random stock photos).
+    let imageBytes: Uint8Array | null = null;
+    let usedFallback = false;
+    let lastError: string | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        // 5s backoff — gives Pollinations a breather
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+      imageBytes = await tryFetch(pollinationsUrl);
+      if (imageBytes) break;
+      lastError = `Pollinations attempt ${attempt + 1} failed`;
+    }
+
+    // If Pollinations failed both attempts, fall back to Picsum (random photos)
+    if (!imageBytes) {
+      console.log("Pollinations failed, trying Picsum fallback");
+      imageBytes = await tryFetch(fallbackUrl);
+      if (imageBytes) {
+        usedFallback = true;
+      } else {
+        return NextResponse.json(
+          {
+            ok: false,
+            sceneId: nextScene.id,
+            sceneOrder: nextScene.order,
+            error:
+              lastError +
+              " AND Picsum fallback also failed. Network issue. Try again in a minute.",
+          },
+          { status: 502 }
+        );
+      }
+    }
+
+    // Convert to base64 data URL
+    const b64 = Buffer.from(imageBytes).toString("base64");
+    const dataUrl = `data:image/jpeg;base64,${b64}`;
+
+    await db.scene.update({
+      where: { id: nextScene.id },
+      data: { imageUrl: dataUrl },
+    });
+    await db.generatedAsset.create({
+      data: {
+        videoId,
+        type: "scene-image",
+        url: dataUrl,
+        metaJson: JSON.stringify({
+          sceneOrder: nextScene.order,
+          provider: usedFallback ? "picsum" : "pollinations",
+          storage: "data-url",
+          size: "1280x720",
+          seed,
+          fallbackUsed: usedFallback,
+        }),
       },
-      { status: 502 }
-    );
+    });
+
+    const remainingScenes = video.scenes.filter(
+      (s) => s.order > nextScene.order && !s.imageUrl
+    ).length;
+
+    if (nextScene.order === video.scenes[video.scenes.length - 1].order) {
+      await db.videoProject.update({
+        where: { id: videoId },
+        data: { status: "imaged" },
+      });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      done: remainingScenes === 0,
+      sceneId: nextScene.id,
+      sceneOrder: nextScene.order,
+      imageUrl: dataUrl,
+      scenesRemaining: remainingScenes,
+      provider: usedFallback ? "picsum" : "pollinations",
+      fallbackUsed: usedFallback,
+    });
   } catch (e) {
     console.error("scene image error", e);
     return NextResponse.json(
