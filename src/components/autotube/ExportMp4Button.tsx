@@ -56,7 +56,7 @@ async function loadFFmpegWasm(): Promise<any> {
         script.src = scriptUrl;
         script.onload = () => resolve();
         script.onerror = () =>
-          reject(new Error("Failed to load ffmpeg.wasm 0.11.13 from CDN"));
+          reject(new Error("Failed to load ffmpeg.wasm 0.11.6 from CDN"));
         document.head.appendChild(script);
       });
     }
