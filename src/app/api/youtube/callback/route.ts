@@ -37,8 +37,11 @@ export async function GET(req: Request) {
   // browser used https:. Use x-forwarded-proto header (Vercel sets it correctly).
   const host = req.headers.get("host") || url.host;
   const forwardedProto = req.headers.get("x-forwarded-proto");
-  const protocol = forwardedProto || (process.env.NODE_ENV === "production" ? "https:" : "http:");
-  const origin = `${protocol}//${host}`;
+  // x-forwarded-proto returns "https" (no colon) — ensure protocol ends with ":"
+  const proto = forwardedProto
+    ? forwardedProto.endsWith(":") ? forwardedProto : forwardedProto + ":"
+    : (process.env.NODE_ENV === "production" ? "https:" : "http:");
+  const origin = `${proto}//${host}`;
   const redirectUri = `${origin}/api/youtube/callback`;
 
   // Exchange code for tokens
