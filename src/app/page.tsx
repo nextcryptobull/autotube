@@ -84,6 +84,26 @@ export default function Home() {
     null
   );
 
+  // Detect YouTube OAuth callback params (at page level — works even
+  // when YouTubeUpload component isn't mounted yet)
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("youtube_connected") === "true") {
+      import("sonner").then(({ toast }) => {
+        toast.success("YouTube connected successfully!");
+      });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    if (params.get("youtube_error")) {
+      const err = params.get("youtube_error") || "Unknown error";
+      import("sonner").then(({ toast }) => {
+        toast.error("YouTube connection failed: " + err, { duration: 10000 });
+      });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [status]);
+
   // Listen for "open studio with niche" event from Trends tab
   useEffect(() => {
     const handler = (e: Event) => {
