@@ -110,3 +110,15 @@ model MonetizationRecord {
   actualRevenue Float?
   createdAt    DateTime @default(now())
 }
+
+// YouTube OAuth tokens (single-row table — one channel per deployment)
+model YouTubeToken {
+  id           String    @id @default("singleton")
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  channelId    String?
+  channelTitle String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}

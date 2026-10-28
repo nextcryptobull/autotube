@@ -36,6 +36,7 @@ import {
 import type { Niche, VideoProject } from "@/lib/autotube/types";
 import { fmtDuration, STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
 import ExportMp4Button from "@/components/autotube/ExportMp4Button";
+import YouTubeUpload from "@/components/autotube/YouTubeUpload";
 
 interface Props {
   preselectNicheId?: string | null;
@@ -57,6 +58,7 @@ export default function StudioTab({
   const [voicing, setVoicing] = useState(false);
   const [imaging, setImaging] = useState(false);
   const [narratorVoice, setNarratorVoice] = useState("en-GB"); // British male default
+  const [mp4BlobUrl, setMp4BlobUrl] = useState<string | null>(null);
 
   // Load niches list
   useEffect(() => {
@@ -398,6 +400,8 @@ export default function StudioTab({
                 onSchedule={handleSchedule}
                 narratorVoice={narratorVoice}
                 onVoiceChange={setNarratorVoice}
+                mp4BlobUrl={mp4BlobUrl}
+                onExported={setMp4BlobUrl}
               />
             )}
           </CardContent>
@@ -432,6 +436,8 @@ function GeneratedPackage({
   onSchedule,
   narratorVoice,
   onVoiceChange,
+  mp4BlobUrl,
+  onExported,
 }: {
   video: VideoProject;
   voicing: boolean;
@@ -441,6 +447,8 @@ function GeneratedPackage({
   onSchedule: () => void;
   narratorVoice: string;
   onVoiceChange: (v: string) => void;
+  mp4BlobUrl: string | null;
+  onExported: (url: string) => void;
 }) {
   const scriptPayload = video.scriptJson
     ? (JSON.parse(video.scriptJson) as {
@@ -639,13 +647,25 @@ function GeneratedPackage({
         </div>
       )}
 
-      {/* MP4 export — only shown if at least one scene has both image + audio */}
+      {/* MP4 export + YouTube upload — shown if at least one scene has both image + audio */}
       {scenes.some((s) => s.imageUrl && s.audioUrl) && (
-        <div className="p-3 rounded-md bg-purple-500/5 border border-purple-500/20">
-          <div className="text-[10px] uppercase tracking-wider text-purple-300 mb-2 flex items-center gap-1">
-            <Film className="size-3" /> Export final MP4 video
+        <div className="p-3 rounded-md bg-purple-500/5 border border-purple-500/20 space-y-3">
+          <div className="text-[10px] uppercase tracking-wider text-purple-300 mb-1 flex items-center gap-1">
+            <Film className="size-3" /> Export & Upload
           </div>
-          <ExportMp4Button scenes={scenes} videoTitle={video.title} />
+          <ExportMp4Button
+            scenes={scenes}
+            videoTitle={video.title}
+            onExported={onExported}
+          />
+          <div className="border-t border-zinc-800/60 pt-2">
+            <YouTubeUpload
+              scenes={scenes}
+              videoTitle={video.title}
+              nicheName={video.niche?.name}
+              mp4BlobUrl={mp4BlobUrl}
+            />
+          </div>
         </div>
       )}
 

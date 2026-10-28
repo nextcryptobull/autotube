@@ -9,6 +9,7 @@ import type { Scene } from "@/lib/autotube/types";
 interface Props {
   scenes: Scene[];
   videoTitle: string;
+  onExported?: (blobUrl: string) => void;
 }
 
 // Helper: fetch a URL (or data: URL) and return Uint8Array
@@ -79,7 +80,7 @@ async function loadFFmpegWasm(): Promise<any> {
   return ffmpegLoaderPromise;
 }
 
-export default function ExportMp4Button({ scenes, videoTitle }: Props) {
+export default function ExportMp4Button({ scenes, videoTitle, onExported }: Props) {
   const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
@@ -209,6 +210,7 @@ export default function ExportMp4Button({ scenes, videoTitle }: Props) {
       const blob = new Blob([data.buffer], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
+      if (onExported) onExported(url);
 
       setProgress(100);
       setStatus("Done!");

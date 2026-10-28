@@ -337,6 +337,17 @@ CREATE INDEX IF NOT EXISTS "VideoProject_nicheId_idx" ON "VideoProject"("nicheId
 CREATE INDEX IF NOT EXISTS "Scene_videoId_idx" ON "Scene"("videoId");
 CREATE INDEX IF NOT EXISTS "GeneratedAsset_videoId_idx" ON "GeneratedAsset"("videoId");
 CREATE INDEX IF NOT EXISTS "PublishingSlot_videoId_idx" ON "PublishingSlot"("videoId");
+
+CREATE TABLE IF NOT EXISTS "YouTubeToken" (
+  "id" TEXT PRIMARY KEY NOT NULL DEFAULT 'singleton',
+  "accessToken" TEXT NOT NULL,
+  "refreshToken" TEXT NOT NULL,
+  "expiresAt" DATETIME NOT NULL,
+  "channelId" TEXT,
+  "channelTitle" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 // Apply the schema directly via libsql client.
