@@ -42,12 +42,16 @@ import YouTubeUpload from "@/components/autotube/YouTubeUpload";
 interface Props {
   preselectNicheId?: string | null;
   clearPreselect?: () => void;
+  preselectVideoId?: string | null;
+  clearVideoPreselect?: () => void;
   onOpenSchedule?: (videoId: string) => void;
 }
 
 export default function StudioTab({
   preselectNicheId,
   clearPreselect,
+  preselectVideoId,
+  clearVideoPreselect,
   onOpenSchedule,
 }: Props) {
   const [niches, setNiches] = useState<Niche[]>([]);
@@ -83,6 +87,34 @@ export default function StudioTab({
       clearPreselect?.();
     }
   }, [preselectNicheId, clearPreselect]);
+
+  // Pre-select a video from Pipeline tab — load it into the studio for editing
+  useEffect(() => {
+    if (preselectVideoId) {
+      (async () => {
+        try {
+          const res = await fetch("/api/videos");
+          if (res.ok) {
+            const data = await res.json();
+            const v = (data.videos as VideoProject[]).find(
+              (x) => x.id === preselectVideoId
+            );
+            if (v) {
+              setCurrentVideo(v);
+              setNicheId(v.nicheId ?? v.niche?.id ?? "");
+              toast.success(`Loaded: ${v.title}`);
+            } else {
+              toast.error("Video not found");
+            }
+          }
+        } catch {
+          toast.error("Failed to load video");
+        } finally {
+          clearVideoPreselect?.();
+        }
+      })();
+    }
+  }, [preselectVideoId, clearVideoPreselect]);
 
   const handleGenerate = async () => {
     if (!nicheId) {

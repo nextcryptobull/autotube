@@ -74,6 +74,7 @@ const TABS: Array<{
 export default function Home() {
   const [active, setActive] = useState<TabKey>("overview");
   const [studioPreselect, setStudioPreselect] = useState<string | null>(null);
+  const [studioVideoPreselect, setStudioVideoPreselect] = useState<string | null>(null);
   const [schedulePreselect, setSchedulePreselect] = useState<string | null>(
     null
   );
@@ -205,6 +206,8 @@ export default function Home() {
           <StudioTab
             preselectNicheId={studioPreselect}
             clearPreselect={() => setStudioPreselect(null)}
+            preselectVideoId={studioVideoPreselect}
+            clearVideoPreselect={() => setStudioVideoPreselect(null)}
             onOpenSchedule={openSchedule}
           />
         )}
@@ -212,6 +215,10 @@ export default function Home() {
           <PipelineTab
             onOpenStudio={openStudio}
             onOpenSchedule={openSchedule}
+            onEditVideo={(videoId) => {
+              setStudioVideoPreselect(videoId);
+              setActive("studio");
+            }}
           />
         )}
         {active === "schedule" && (
