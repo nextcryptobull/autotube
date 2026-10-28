@@ -56,6 +56,7 @@ export default function StudioTab({
   const [currentVideo, setCurrentVideo] = useState<VideoProject | null>(null);
   const [voicing, setVoicing] = useState(false);
   const [imaging, setImaging] = useState(false);
+  const [narratorVoice, setNarratorVoice] = useState("en-GB"); // British male default
 
   // Load niches list
   useEffect(() => {
@@ -120,7 +121,7 @@ export default function StudioTab({
         const res = await fetch("/api/content/voiceover", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ videoId: currentVideo.id }),
+          body: JSON.stringify({ videoId: currentVideo.id, voice: narratorVoice }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -128,10 +129,8 @@ export default function StudioTab({
           break;
         }
         const data = await res.json();
-        if (data.done) {
-          toast.success(`All scenes voiced (${totalProcessed} scenes)`);
-          return;
-        }
+        // CRITICAL: process audioUrl BEFORE checking done — same bug as
+        // scene images. The last scene returns both done=true AND audioUrl.
         if (data.audioUrl) {
           totalProcessed++;
           setCurrentVideo((prev) => {
@@ -143,6 +142,10 @@ export default function StudioTab({
               ),
             };
           });
+        }
+        if (data.done) {
+          toast.success(`All scenes voiced (${totalProcessed} scenes)`);
+          return;
         }
       }
       if (totalProcessed > 0) {
@@ -199,17 +202,12 @@ export default function StudioTab({
         }
 
         const data = await res.json();
-        if (data.done) {
-          toast.success(
-            `All scene images generated!` +
-              (totalProcessed > 0 ? ` (${totalProcessed} scenes this run)` : "")
-          );
-          return;
-        }
+        // CRITICAL: process imageUrl BEFORE checking done — the last scene
+        // returns BOTH done=true AND imageUrl=... If we check done first,
+        // the last scene's image never gets rendered in the UI.
         if (data.imageUrl) {
           totalProcessed++;
-          totalFailed = 0; // reset failure counter on success
-          // Update the current video's scenes locally to show progress
+          totalFailed = 0;
           setCurrentVideo((prev) => {
             if (!prev) return prev;
             return {
@@ -219,8 +217,14 @@ export default function StudioTab({
               ),
             };
           });
-          // Small delay between scenes to avoid Pollinations 429
           await sleep(500);
+        }
+        if (data.done) {
+          toast.success(
+            `All scene images generated!` +
+              (totalProcessed > 0 ? ` (${totalProcessed} scenes this run)` : "")
+          );
+          return;
         }
       }
 
@@ -392,6 +396,8 @@ export default function StudioTab({
                 onVoiceover={handleVoiceover}
                 onImages={handleImages}
                 onSchedule={handleSchedule}
+                narratorVoice={narratorVoice}
+                onVoiceChange={setNarratorVoice}
               />
             )}
           </CardContent>
@@ -424,6 +430,8 @@ function GeneratedPackage({
   onVoiceover,
   onImages,
   onSchedule,
+  narratorVoice,
+  onVoiceChange,
 }: {
   video: VideoProject;
   voicing: boolean;
@@ -431,6 +439,8 @@ function GeneratedPackage({
   onVoiceover: () => void;
   onImages: () => void;
   onSchedule: () => void;
+  narratorVoice: string;
+  onVoiceChange: (v: string) => void;
 }) {
   const scriptPayload = video.scriptJson
     ? (JSON.parse(video.scriptJson) as {
@@ -467,6 +477,44 @@ function GeneratedPackage({
             <p className="text-sm italic">"{scriptPayload.hook}"</p>
           </div>
         )}
+      </div>
+
+      {/* Narrator voice selector */}
+      <div className="flex items-center gap-2">
+        <Label className="text-xs text-muted-foreground whitespace-nowrap">
+          Narrator voice:
+        </Label>
+        <select
+          value={narratorVoice}
+          onChange={(e) => onVoiceChange(e.target.value)}
+          disabled={voicing}
+          className="flex-1 h-8 rounded-md bg-zinc-900 border border-zinc-800 px-2 text-xs"
+        >
+          <optgroup label="English">
+            <option value="en-GB">🇬🇧 English (UK, male — BBC documentary)</option>
+            <option value="en">🇺🇸 English (US, female)</option>
+            <option value="en-AU">🇦🇺 English (Australia, female)</option>
+            <option value="en-IN">🇮🇳 English (India, male)</option>
+          </optgroup>
+          <optgroup label="Other languages">
+            <option value="de">🇩🇪 German</option>
+            <option value="fr">🇫🇷 French</option>
+            <option value="es">🇪🇸 Spanish</option>
+            <option value="it">🇮🇹 Italian</option>
+            <option value="pt">🇵🇹 Portuguese</option>
+            <option value="ru">🇷🇺 Russian</option>
+            <option value="ja">🇯🇵 Japanese</option>
+            <option value="ko">🇰🇷 Korean</option>
+            <option value="zh-CN">🇨🇳 Chinese (Simplified)</option>
+            <option value="hi">🇮🇳 Hindi</option>
+            <option value="ar">🇸🇦 Arabic</option>
+            <option value="nl">🇳🇱 Dutch</option>
+            <option value="tr">🇹🇷 Turkish</option>
+            <option value="pl">🇵🇱 Polish</option>
+            <option value="vi">🇻🇳 Vietnamese</option>
+            <option value="th">🇹🇭 Thai</option>
+          </optgroup>
+        </select>
       </div>
 
       <div className="grid grid-cols-2 gap-2">

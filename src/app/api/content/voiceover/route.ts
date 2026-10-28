@@ -27,7 +27,20 @@ export const maxDuration = 60;
 // can play it via <audio src="data:audio/mpeg;base64,..."> without any
 // external storage.
 
-const LANGUAGE = "en"; // English narration
+// Default language for TTS — can be overridden per-request via the `voice` param.
+// Google Translate TTS supports ~50 language codes, each with a distinct voice.
+// Popular options for English-language channels:
+//   "en"    = English (US, female)
+//   "en-GB" = English (UK, male) — documentary/BBC style
+//   "en-AU" = English (Australia, female)
+//   "en-IN" = English (India, male)
+// For other languages:
+//   "de" = German, "fr" = French, "es" = Spanish, "it" = Italian,
+//   "pt" = Portuguese, "ru" = Russian, "ja" = Japanese, "ko" = Korean,
+//   "zh-CN" = Chinese (Simplified), "hi" = Hindi, "ar" = Arabic, "nl" = Dutch,
+//   "tr" = Turkish, "pl" = Polish, "vi" = Vietnamese, "th" = Thai
+
+const DEFAULT_LANGUAGE = "en-GB"; // British male — best for documentary narration
 
 // Google Translate TTS has a strict ~200 char per-request limit.
 // Chunk at sentence boundaries.
@@ -63,10 +76,10 @@ function chunkText(text: string, max = 190): string[] {
   return chunks;
 }
 
-async function fetchGoogleTts(text: string): Promise<Buffer | null> {
+async function fetchGoogleTts(text: string, language: string): Promise<Buffer | null> {
   const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
     text
-  )}&tl=${LANGUAGE}&client=tw-ob`;
+  )}&tl=${language}&client=tw-ob`;
   try {
     const resp = await fetch(url, {
       headers: {
@@ -92,7 +105,10 @@ async function fetchGoogleTts(text: string): Promise<Buffer | null> {
 
 export async function POST(req: Request) {
   try {
-    const { videoId } = await req.json();
+    const { videoId, voice } = await req.json();
+    // voice = Google Translate TTS language code (e.g. "en", "en-GB", "de", "fr")
+    // See the comment block above for the full list of supported codes.
+    const language = voice || DEFAULT_LANGUAGE;
     if (!videoId) {
       return NextResponse.json({ error: "videoId required" }, { status: 400 });
     }
@@ -130,7 +146,7 @@ export async function POST(req: Request) {
     const chunkBuffers: Buffer[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const buf = await fetchGoogleTts(chunks[i]);
+      const buf = await fetchGoogleTts(chunks[i], language);
       if (!buf) {
         return NextResponse.json(
           {
