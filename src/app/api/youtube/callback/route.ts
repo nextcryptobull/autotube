@@ -32,9 +32,12 @@ export async function GET(req: Request) {
     );
   }
 
-  // Build the redirect URI (must match what was used in /api/youtube/auth)
+  // Build the redirect URI (must EXACTLY match what was used in /api/youtube/auth)
+  // On Vercel, the internal request protocol may be http: even though the
+  // browser used https:. Use x-forwarded-proto header (Vercel sets it correctly).
   const host = req.headers.get("host") || url.host;
-  const protocol = url.protocol || "https:";
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const protocol = forwardedProto || (process.env.NODE_ENV === "production" ? "https:" : "http:");
   const origin = `${protocol}//${host}`;
   const redirectUri = `${origin}/api/youtube/callback`;
 

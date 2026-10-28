@@ -16,9 +16,12 @@ export async function GET(req: Request) {
   }
 
   // Build the redirect URI dynamically from the request's host
+  // On Vercel, use x-forwarded-proto header (internal request may be http:
+  // even though the browser used https:). Must match what the callback uses.
   const url = new URL(req.url);
   const host = req.headers.get("host") || url.host;
-  const protocol = url.protocol || (process.env.NODE_ENV === "production" ? "https:" : "http:");
+  const forwardedProto = req.headers.get("x-forwarded-proto");
+  const protocol = forwardedProto || (process.env.NODE_ENV === "production" ? "https:" : "http:");
   const origin = `${protocol}//${host}`;
   const redirectUri = `${origin}/api/youtube/callback`;
 
