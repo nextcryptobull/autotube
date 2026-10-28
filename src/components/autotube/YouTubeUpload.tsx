@@ -267,7 +267,7 @@ export default function YouTubeUpload({
       ) : (
         <Button
           onClick={handleUpload}
-          disabled={uploading || !mp4Blob}
+          disabled={uploading || !mp4BlobUrl}
           size="sm"
           className="bg-red-600 hover:bg-red-500 text-white"
         >
