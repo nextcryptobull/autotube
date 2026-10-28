@@ -32,6 +32,7 @@ import {
   Play,
   Calendar,
   Film,
+  Trash2,
 } from "lucide-react";
 import type { Niche, VideoProject } from "@/lib/autotube/types";
 import { fmtDuration, STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
@@ -256,6 +257,46 @@ export default function StudioTab({
     }
   };
 
+  const handleDeleteVideo = async () => {
+    if (!currentVideo) return;
+    try {
+      const res = await fetch("/api/videos", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: currentVideo.id }),
+      });
+      if (res.ok) {
+        toast.success("Video deleted");
+        setCurrentVideo(null);
+        setMp4BlobUrl(null);
+      } else {
+        toast.error("Failed to delete video");
+      }
+    } catch {
+      toast.error("Network error");
+    }
+  };
+
+  const handleEditTitle = async (newTitle: string) => {
+    if (!currentVideo) return;
+    try {
+      const res = await fetch("/api/videos", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: currentVideo.id, title: newTitle }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCurrentVideo(data.video);
+        toast.success("Title updated");
+      } else {
+        toast.error("Failed to update title");
+      }
+    } catch {
+      toast.error("Network error");
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Card className="border-primary/30 bg-gradient-to-br from-zinc-900 to-zinc-950">
@@ -402,6 +443,8 @@ export default function StudioTab({
                 onVoiceChange={setNarratorVoice}
                 mp4BlobUrl={mp4BlobUrl}
                 onExported={setMp4BlobUrl}
+                onDelete={handleDeleteVideo}
+                onEditTitle={handleEditTitle}
               />
             )}
           </CardContent>
@@ -438,6 +481,8 @@ function GeneratedPackage({
   onVoiceChange,
   mp4BlobUrl,
   onExported,
+  onDelete,
+  onEditTitle,
 }: {
   video: VideoProject;
   voicing: boolean;
@@ -449,7 +494,11 @@ function GeneratedPackage({
   onVoiceChange: (v: string) => void;
   mp4BlobUrl: string | null;
   onExported: (url: string) => void;
+  onDelete: () => void;
+  onEditTitle: (title: string) => void;
 }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(video.title);
   const scriptPayload = video.scriptJson
     ? (JSON.parse(video.scriptJson) as {
         hook?: string;
@@ -462,20 +511,82 @@ function GeneratedPackage({
     <div className="space-y-5">
       <div className="space-y-1.5">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="font-semibold text-lg leading-tight">
-              {video.title}
-            </h3>
+          <div className="flex-1 min-w-0">
+            {editingTitle ? (
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  type="text"
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      onEditTitle(titleDraft);
+                      setEditingTitle(false);
+                    } else if (e.key === "Escape") {
+                      setTitleDraft(video.title);
+                      setEditingTitle(false);
+                    }
+                  }}
+                  className="flex-1 h-8 rounded-md bg-zinc-900 border border-amber-500/40 px-2 text-sm font-semibold"
+                />
+                <Button
+                  size="sm"
+                  className="bg-amber-600 hover:bg-amber-500 h-8"
+                  onClick={() => {
+                    onEditTitle(titleDraft);
+                    setEditingTitle(false);
+                  }}
+                >
+                  Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8"
+                  onClick={() => {
+                    setTitleDraft(video.title);
+                    setEditingTitle(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <h3
+                className="font-semibold text-lg leading-tight cursor-pointer hover:text-amber-300"
+                onClick={() => {
+                  setTitleDraft(video.title);
+                  setEditingTitle(true);
+                }}
+                title="Click to edit title"
+              >
+                {video.title}
+              </h3>
+            )}
             <p className="text-xs text-muted-foreground mt-1">
               {video.niche?.name} · {video.format} ·{" "}
               {fmtDuration(video.durationSec)}
             </p>
           </div>
-          <span
-            className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap ${STATUS_COLORS[video.status] ?? ""}`}
-          >
-            {STATUS_LABELS[video.status] ?? video.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-[10px] px-2 py-0.5 rounded-full border whitespace-nowrap ${STATUS_COLORS[video.status] ?? ""}`}
+            >
+              {STATUS_LABELS[video.status] ?? video.status}
+            </span>
+            <button
+              onClick={() => {
+                if (confirm(`Delete "${video.title}"? This cannot be undone.`)) {
+                  onDelete();
+                }
+              }}
+              className="size-7 rounded grid place-items-center text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+              title="Delete video"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </div>
         </div>
         {scriptPayload?.hook && (
           <div className="p-3 rounded-md bg-amber-500/5 border border-amber-500/20">

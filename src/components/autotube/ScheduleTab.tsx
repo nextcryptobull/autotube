@@ -34,6 +34,8 @@ import {
   Clock,
   Youtube,
   RefreshCw,
+  Trash2,
+  X,
 } from "lucide-react";
 import type { PublishingSlot, VideoProject } from "@/lib/autotube/types";
 import { STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
@@ -55,6 +57,7 @@ export default function ScheduleTab({
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("09:00");
   const [submitting, setSubmitting] = useState(false);
+  const [editingSlotId, setEditingSlotId] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -97,6 +100,54 @@ export default function ScheduleTab({
   const eligibleVideos = videos.filter(
     (v) => v.status === "imaged" || v.status === "voiced" || v.status === "assembled"
   );
+
+  // Delete a scheduled slot (cancel)
+  const handleDeleteSlot = async (slotId: string) => {
+    if (!confirm("Cancel this scheduled slot? The video will move back to 'imaged' status.")) {
+      return;
+    }
+    try {
+      const res = await fetch("/api/schedule", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: slotId }),
+      });
+      if (res.ok) {
+        toast.success("Slot cancelled");
+        await load();
+      } else {
+        toast.error("Failed to cancel slot");
+      }
+    } catch {
+      toast.error("Network error");
+    }
+  };
+
+  // Open inline reschedule form
+  const handleReschedule = (slotId: string, _currentDate: string) => {
+    setEditingSlotId(editingSlotId === slotId ? null : slotId);
+  };
+
+  // Save rescheduled slot
+  const handleSaveReschedule = async (slotId: string, newDateTime: string) => {
+    try {
+      const iso = new Date(newDateTime).toISOString();
+      const res = await fetch("/api/schedule", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: slotId, scheduledAt: iso }),
+      });
+      if (res.ok) {
+        toast.success("Slot rescheduled");
+        setEditingSlotId(null);
+        await load();
+      } else {
+        toast.error("Failed to reschedule");
+      }
+    } catch {
+      toast.error("Network error");
+    }
+  };
 
   const handleCreate = async () => {
     if (!selectedVideoId || !scheduledDate) {
@@ -226,7 +277,7 @@ export default function ScheduleTab({
                         .map((s) => (
                           <div
                             key={s.id}
-                            className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-1"
+                            className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-1 group"
                           >
                             <div className="flex items-center gap-1.5">
                               <Clock className="size-3 text-emerald-300" />
@@ -242,6 +293,23 @@ export default function ScheduleTab({
                               >
                                 {s.platform}
                               </Badge>
+                              {/* Action buttons — appear on hover */}
+                              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button
+                                  onClick={() => handleReschedule(s.id, s.scheduledAt)}
+                                  className="size-5 rounded grid place-items-center text-zinc-500 hover:text-amber-300 hover:bg-amber-500/10"
+                                  title="Reschedule"
+                                >
+                                  <RefreshCw className="size-3" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteSlot(s.id)}
+                                  className="size-5 rounded grid place-items-center text-zinc-500 hover:text-red-300 hover:bg-red-500/10"
+                                  title="Cancel slot"
+                                >
+                                  <X className="size-3.5" />
+                                </button>
+                              </div>
                             </div>
                             <p className="text-sm font-medium line-clamp-2">
                               {s.video?.title}
@@ -249,6 +317,37 @@ export default function ScheduleTab({
                             <p className="text-xs text-muted-foreground">
                               {s.video?.niche?.name} · {s.video?.format}
                             </p>
+                            {/* Inline reschedule form */}
+                            {editingSlotId === s.id && (
+                              <div className="flex gap-1 pt-1.5">
+                                <input
+                                  type="datetime-local"
+                                  defaultValue={new Date(s.scheduledAt).toISOString().slice(0, 16)}
+                                  className="flex-1 h-7 rounded border border-zinc-700 bg-zinc-900 px-2 text-xs"
+                                  id={`reschedule-${s.id}`}
+                                />
+                                <Button
+                                  size="sm"
+                                  className="h-7 text-[10px] bg-emerald-600 hover:bg-emerald-500"
+                                  onClick={() => {
+                                    const input = document.getElementById(`reschedule-${s.id}`) as HTMLInputElement;
+                                    if (input?.value) {
+                                      handleSaveReschedule(s.id, input.value);
+                                    }
+                                  }}
+                                >
+                                  Save
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 text-[10px]"
+                                  onClick={() => setEditingSlotId(null)}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         ))}
                     </div>

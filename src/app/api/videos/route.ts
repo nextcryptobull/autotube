@@ -17,12 +17,25 @@ export async function DELETE(req: Request) {
 }
 
 export async function PATCH(req: Request) {
-  const { id, status } = await req.json();
-  if (!id || !status)
-    return NextResponse.json({ error: "id and status required" }, { status: 400 });
+  const { id, status, title, hook, scriptJson } = await req.json();
+  if (!id)
+    return NextResponse.json({ error: "id required" }, { status: 400 });
+
+  // Build update data from provided fields
+  const updateData: Record<string, unknown> = {};
+  if (status) updateData.status = status;
+  if (title) updateData.title = title;
+  if (hook !== undefined) updateData.hook = hook;
+  if (scriptJson !== undefined) updateData.scriptJson = scriptJson;
+
+  if (Object.keys(updateData).length === 0) {
+    return NextResponse.json({ error: "No fields to update" }, { status: 400 });
+  }
+
   const updated = await db.videoProject.update({
     where: { id },
-    data: { status },
+    data: updateData,
+    include: { niche: true, scenes: { orderBy: { order: "asc" } } },
   });
   return NextResponse.json({ video: updated });
 }

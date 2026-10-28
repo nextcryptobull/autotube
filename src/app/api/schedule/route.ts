@@ -37,3 +37,63 @@ export async function POST(req: Request) {
     );
   }
 }
+
+export async function DELETE(req: Request) {
+  try {
+    const { id } = await req.json();
+    if (!id) {
+      return NextResponse.json({ error: "id required" }, { status: 400 });
+    }
+
+    // Find the slot first (to get the videoId for status reset)
+    const slot = await db.publishingSlot.findUnique({
+      where: { id },
+      select: { videoId: true },
+    });
+
+    if (!slot) {
+      return NextResponse.json({ error: "Slot not found" }, { status: 404 });
+    }
+
+    // Delete the slot
+    await db.publishingSlot.delete({ where: { id } });
+
+    // Reset the video status from "scheduled" back to "imaged" or "voiced"
+    await db.videoProject.update({
+      where: { id: slot.videoId },
+      data: { status: "imaged" },
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    return NextResponse.json(
+      { error: (e as Error).message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const { id, scheduledAt } = await req.json();
+    if (!id || !scheduledAt) {
+      return NextResponse.json(
+        { error: "id and scheduledAt required" },
+        { status: 400 }
+      );
+    }
+
+    const updated = await db.publishingSlot.update({
+      where: { id },
+      data: { scheduledAt: new Date(scheduledAt) },
+      include: { video: { include: { niche: true } } },
+    });
+
+    return NextResponse.json({ slot: updated });
+  } catch (e) {
+    return NextResponse.json(
+      { error: (e as Error).message },
+      { status: 500 }
+    );
+  }
+}
