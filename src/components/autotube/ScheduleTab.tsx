@@ -36,6 +36,8 @@ import {
   RefreshCw,
   Trash2,
   X,
+  Upload,
+  AlertCircle,
 } from "lucide-react";
 import type { PublishingSlot, VideoProject } from "@/lib/autotube/types";
 import { STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
@@ -43,11 +45,13 @@ import { STATUS_COLORS, STATUS_LABELS } from "@/lib/autotube/types";
 interface Props {
   preselectVideoId?: string | null;
   clearPreselect?: () => void;
+  onPublishNow?: (videoId: string) => void;
 }
 
 export default function ScheduleTab({
   preselectVideoId,
   clearPreselect,
+  onPublishNow,
 }: Props) {
   const [slots, setSlots] = useState<PublishingSlot[]>([]);
   const [videos, setVideos] = useState<VideoProject[]>([]);
@@ -227,6 +231,18 @@ export default function ScheduleTab({
         </CardContent>
       </Card>
 
+      {/* Info banner about auto-publishing */}
+      <div className="flex items-start gap-2 p-3 rounded-md bg-amber-500/5 border border-amber-500/20 text-xs text-muted-foreground">
+        <AlertCircle className="size-4 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <strong className="text-amber-300">Note:</strong> Schedules are
+          planning tools, not auto-publishers. To actually upload a video to
+          YouTube, click <strong>"Publish Now"</strong> on any slot — this
+          opens the video in Content Studio where you can export the MP4 and
+          upload directly to your YouTube channel.
+        </div>
+      </div>
+
       <Card className="bg-card/80 border-border/60">
         <CardHeader>
           <CardTitle>Upcoming Uploads</CardTitle>
@@ -277,7 +293,7 @@ export default function ScheduleTab({
                         .map((s) => (
                           <div
                             key={s.id}
-                            className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-1 group"
+                            className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3 space-y-2"
                           >
                             <div className="flex items-center gap-1.5">
                               <Clock className="size-3 text-emerald-300" />
@@ -293,23 +309,6 @@ export default function ScheduleTab({
                               >
                                 {s.platform}
                               </Badge>
-                              {/* Action buttons — appear on hover */}
-                              <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  onClick={() => handleReschedule(s.id, s.scheduledAt)}
-                                  className="size-5 rounded grid place-items-center text-zinc-500 hover:text-amber-300 hover:bg-amber-500/10"
-                                  title="Reschedule"
-                                >
-                                  <RefreshCw className="size-3" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteSlot(s.id)}
-                                  className="size-5 rounded grid place-items-center text-zinc-500 hover:text-red-300 hover:bg-red-500/10"
-                                  title="Cancel slot"
-                                >
-                                  <X className="size-3.5" />
-                                </button>
-                              </div>
                             </div>
                             <p className="text-sm font-medium line-clamp-2">
                               {s.video?.title}
@@ -317,6 +316,38 @@ export default function ScheduleTab({
                             <p className="text-xs text-muted-foreground">
                               {s.video?.niche?.name} · {s.video?.format}
                             </p>
+                            {/* Always-visible action buttons */}
+                            <div className="flex gap-1 pt-1 border-t border-zinc-800/60">
+                              {onPublishNow && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 text-[10px] flex-1 text-red-300 hover:bg-red-500/10"
+                                  onClick={() => onPublishNow(s.videoId)}
+                                  title="Open in Studio to export MP4 + upload to YouTube"
+                                >
+                                  <Upload className="size-3 mr-1" /> Publish Now
+                                </Button>
+                              )}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 text-[10px] px-2 text-zinc-500 hover:text-amber-300 hover:bg-amber-500/10"
+                                onClick={() => handleReschedule(s.id, s.scheduledAt)}
+                                title="Reschedule"
+                              >
+                                <RefreshCw className="size-3" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 text-[10px] px-2 text-zinc-500 hover:text-red-300 hover:bg-red-500/10"
+                                onClick={() => handleDeleteSlot(s.id)}
+                                title="Cancel slot"
+                              >
+                                <X className="size-3.5" />
+                              </Button>
+                            </div>
                             {/* Inline reschedule form */}
                             {editingSlotId === s.id && (
                               <div className="flex gap-1 pt-1.5">

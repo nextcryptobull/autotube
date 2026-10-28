@@ -323,6 +323,10 @@ export default function Home() {
           <ScheduleTab
             preselectVideoId={schedulePreselect}
             clearPreselect={() => setSchedulePreselect(null)}
+            onPublishNow={(videoId) => {
+              setStudioVideoPreselect(videoId);
+              setActive("studio");
+            }}
           />
         )}
         {active === "money" && <MoneyTab />}
