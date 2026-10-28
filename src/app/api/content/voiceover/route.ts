@@ -173,7 +173,7 @@ export async function POST(req: Request) {
         metaJson: JSON.stringify({
           sceneOrder: nextScene.order,
           provider: "google-translate-tts",
-          language: LANGUAGE,
+          language: language,
           storage: "data-url-mp3",
           chunkCount: chunks.length,
         }),

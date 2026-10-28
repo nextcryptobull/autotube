@@ -186,7 +186,7 @@ export default function StudioTab({
       if (totalProcessed > 0) {
         toast.success(`Generated ${totalProcessed} scene audio (some may need re-running)`);
       } else {
-        toast.error("No voiceover generated — StreamElements may be rate-limiting");
+        toast.error("No voiceover generated — Google TTS may be rate-limiting. Try again in a minute.");
       }
     } catch (e) {
       toast.error("Network error");
