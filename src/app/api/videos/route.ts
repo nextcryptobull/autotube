@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getCurrentUserId } from "@/lib/get-user";
 
 export async function GET() {
+  const userId = await getCurrentUserId();
+
+  // Show user's own videos + orphaned videos (userId=null, from before accounts)
+  const where = userId
+    ? { OR: [{ userId }, { userId: null }] }
+    : {};
+
   const videos = await db.videoProject.findMany({
+    where,
     include: { niche: true, scenes: { orderBy: { order: "asc" } } },
     orderBy: { createdAt: "desc" },
   });
@@ -10,6 +19,10 @@ export async function GET() {
 }
 
 export async function DELETE(req: Request) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
   const { id } = await req.json();
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
   await db.videoProject.delete({ where: { id } });
@@ -17,11 +30,14 @@ export async function DELETE(req: Request) {
 }
 
 export async function PATCH(req: Request) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
   const { id, status, title, hook, scriptJson } = await req.json();
   if (!id)
     return NextResponse.json({ error: "id required" }, { status: 400 });
 
-  // Build update data from provided fields
   const updateData: Record<string, unknown> = {};
   if (status) updateData.status = status;
   if (title) updateData.title = title;

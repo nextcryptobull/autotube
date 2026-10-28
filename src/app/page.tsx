@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useSession, signIn, signOut } from "next-auth/react";
 import {
   LayoutDashboard,
   Flame,
@@ -10,6 +11,9 @@ import {
   PiggyBank,
   Loader2,
   Sparkles,
+  LogIn,
+  LogOut,
+  User,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import OverviewTab from "@/components/autotube/OverviewTab";
@@ -72,6 +76,7 @@ const TABS: Array<{
 ];
 
 export default function Home() {
+  const { data: session, status } = useSession();
   const [active, setActive] = useState<TabKey>("overview");
   const [studioPreselect, setStudioPreselect] = useState<string | null>(null);
   const [studioVideoPreselect, setStudioVideoPreselect] = useState<string | null>(null);
@@ -92,16 +97,62 @@ export default function Home() {
     return () => window.removeEventListener("autotube:open-studio", handler);
   }, []);
 
-  // First-run auto-seed
+  // First-run auto-seed (only when logged in)
   useEffect(() => {
-    (async () => {
-      try {
-        await fetch("/api/seed", { method: "POST" });
-      } catch {
-        // silent
-      }
-    })();
-  }, []);
+    if (status === "authenticated") {
+      (async () => {
+        try {
+          await fetch("/api/seed", { method: "POST" });
+        } catch {
+          // silent
+        }
+      })();
+    }
+  }, [status]);
+
+  // Show loading while checking session
+  if (status === "loading") {
+    return (
+      <div className="min-h-screen grid place-items-center bg-background">
+        <Loader2 className="size-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // Login gate — if not authenticated, show login screen
+  if (status === "unauthenticated" || !session) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-zinc-950 via-zinc-900 to-black gap-8 px-4">
+        <div className="text-center space-y-4">
+          <div className="size-16 rounded-2xl bg-gradient-to-br from-red-500 to-amber-500 grid place-items-center mx-auto">
+            <Sparkles className="size-8 text-white" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold">
+              <span className="text-gradient-warm">AutoTube</span> Studio
+            </h1>
+            <p className="text-muted-foreground mt-2">
+              AI YouTube Channel Engine — trend-driven niche selection,
+              script generation, voiceover, scene imagery, MP4 export, and
+              direct YouTube upload.
+            </p>
+          </div>
+        </div>
+        <Button
+          size="lg"
+          className="bg-primary hover:bg-primary/90 gap-2"
+          onClick={() => signIn("google")}
+        >
+          <LogIn className="size-5" />
+          Sign in with Google
+        </Button>
+        <p className="text-xs text-muted-foreground max-w-md text-center">
+          Your Google account is used for authentication only. We don't
+          store your password — OAuth 2.0 handles everything securely.
+        </p>
+      </div>
+    );
+  }
 
   const openStudio = () => setActive("studio");
   const openTrends = () => setActive("trends");
@@ -153,14 +204,41 @@ export default function Home() {
               );
             })}
           </div>
-          <Button
-            size="sm"
-            className="bg-primary hover:bg-primary/90"
-            onClick={openStudio}
-          >
-            <Sparkles className="size-4 mr-1.5" />
-            <span className="hidden sm:inline">Generate</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="bg-primary hover:bg-primary/90"
+              onClick={openStudio}
+            >
+              <Sparkles className="size-4 mr-1.5" />
+              <span className="hidden sm:inline">Generate</span>
+            </Button>
+            {/* User avatar + logout */}
+            <div className="flex items-center gap-2 pl-2 border-l border-border/40">
+              {session.user?.image ? (
+                <img
+                  src={session.user.image}
+                  alt={session.user.name ?? "User"}
+                  className="size-8 rounded-full"
+                />
+              ) : (
+                <div className="size-8 rounded-full bg-zinc-700 grid place-items-center">
+                  <User className="size-4 text-zinc-300" />
+                </div>
+              )}
+              <div className="hidden sm:block">
+                <p className="text-xs font-medium leading-tight truncate max-w-[120px]">
+                  {session.user?.name ?? "User"}
+                </p>
+                <button
+                  onClick={() => signOut()}
+                  className="text-[10px] text-muted-foreground hover:text-red-300 flex items-center gap-0.5"
+                >
+                  <LogOut className="size-3" /> Sign out
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Mobile tab strip */}

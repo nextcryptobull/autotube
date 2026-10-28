@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getZai } from "@/lib/zai";
+import { getCurrentUserId } from "@/lib/get-user";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -132,9 +133,12 @@ Return JSON only, following the schema in the system message.`;
       (s, sc) => s + (sc.durationSec || 8),
       0
     );
+    const userId = await getCurrentUserId();
+
     const video = await db.videoProject.create({
       data: {
         nicheId,
+        userId: userId || null,
         title: parsed.title,
         hook: parsed.hook,
         format,

@@ -348,6 +348,50 @@ CREATE TABLE IF NOT EXISTS "YouTubeToken" (
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS "users" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "name" TEXT,
+  "email" TEXT NOT NULL UNIQUE,
+  "emailVerified" DATETIME,
+  "image" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "accounts" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "userId" TEXT NOT NULL,
+  "type" TEXT NOT NULL,
+  "provider" TEXT NOT NULL,
+  "providerAccountId" TEXT NOT NULL,
+  "refresh_token" TEXT,
+  "access_token" TEXT,
+  "expires_at" INTEGER,
+  "token_type" TEXT,
+  "scope" TEXT,
+  "id_token" TEXT,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "sessions" (
+  "id" TEXT PRIMARY KEY NOT NULL,
+  "sessionToken" TEXT NOT NULL UNIQUE,
+  "userId" TEXT NOT NULL,
+  "expires" DATETIME NOT NULL,
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS "verificationtokens" (
+  "identifier" TEXT NOT NULL,
+  "token" TEXT NOT NULL UNIQUE,
+  "expires" DATETIME NOT NULL
+);
+
+ALTER TABLE "VideoProject" ADD COLUMN "userId" TEXT;
+ALTER TABLE "PublishingSlot" ADD COLUMN "userId" TEXT;
 `;
 
 // Apply the schema directly via libsql client.
