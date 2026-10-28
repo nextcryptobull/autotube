@@ -251,17 +251,27 @@ export default function YouTubeUpload({
               Uploaded to YouTube
             </span>
           </div>
-          <a
-            href={`https://youtube.com/watch?v=${uploadedVideoId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-emerald-200 underline hover:text-emerald-100"
-          >
-            https://youtube.com/watch?v={uploadedVideoId}
-          </a>
-          <p className="text-[10px] text-muted-foreground mt-1">
-            Uploaded as "private". Go to YouTube Studio to set thumbnail,
-            description, and publish.
+          <div className="space-y-1">
+            <a
+              href={`https://www.youtube.com/watch?v=${uploadedVideoId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-emerald-200 underline hover:text-emerald-100 block"
+            >
+              https://www.youtube.com/watch?v={uploadedVideoId}
+            </a>
+            <a
+              href="https://studio.youtube.com/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-amber-300 underline hover:text-amber-200 block"
+            >
+              → Go to YouTube Studio to set thumbnail, description & publish
+            </a>
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-2">
+            Uploaded as "private". Change visibility to Public or Unlisted in
+            YouTube Studio to make the link work.
           </p>
         </div>
       ) : (
