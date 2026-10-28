@@ -132,7 +132,7 @@ export async function GET(req: Request) {
               "channelId" = excluded."channelId",
               "channelTitle" = excluded."channelTitle",
               "updatedAt" = excluded."updatedAt"`,
-      args: [accessToken, refreshToken, expiresAt.toISOString(), channelId, channelTitle],
+      args: [accessToken, refreshToken, expiresAt.toISOString(), channelId, channelTitle, new Date().toISOString()],
     });
 
     // Redirect back to dashboard with success
